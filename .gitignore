@@ -1,0 +1,23 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/.browse.c_cpp.properties.json
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch/
+
+# Build artifacts
+*.bin
+*.elf
+*.map
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local secrets / overrides (config lives in NVS, but keep this in case anyone hardcodes)
+src/secrets.h
+
+# Generated at build time by tools/pio_prebuild.py
+src/build_info.h

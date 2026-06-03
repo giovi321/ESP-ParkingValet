@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ESP-ParkingValet</title>
+<style>
+  :root{
+    --bg:#0f141a; --panel:#172029; --panel2:#1e2935; --line:#2a3744;
+    --txt:#e6edf3; --muted:#8b9bab; --accent:#4c9eff; --accent2:#2b6fb3;
+    --ok:#2ecc71; --busy:#ff5b5b; --warn:#ffb02e; --off:#5b6b7a;
+    --r:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--txt);
+    font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  a{color:var(--accent)}
+  header{position:sticky;top:0;z-index:5;background:rgba(15,20,26,.92);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
+    padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .logo{font-weight:700;letter-spacing:.3px}
+  .logo b{color:var(--accent)}
+  .pill{font-size:12px;padding:3px 9px;border-radius:999px;background:var(--panel2);
+    border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .pill.sta{color:var(--ok);border-color:#1f5b3a}
+  .pill.ap{color:var(--warn);border-color:#5b4a1f}
+  .spacer{flex:1}
+  .count{font-size:13px;color:var(--muted)}
+  .count b{font-size:18px;color:var(--txt)}
+  nav{display:flex;gap:4px;overflow:auto;padding:8px 10px;border-bottom:1px solid var(--line);
+    position:sticky;top:51px;background:var(--bg);z-index:4}
+  nav button{flex:0 0 auto;background:transparent;border:1px solid transparent;color:var(--muted);
+    padding:7px 13px;border-radius:8px;cursor:pointer;font-size:14px}
+  nav button.active{background:var(--panel2);color:var(--txt);border-color:var(--line)}
+  main{max-width:760px;margin:0 auto;padding:14px}
+  section{display:none}
+  section.active{display:block}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+    padding:14px;margin-bottom:14px}
+  .card h2{margin:0 0 10px;font-size:15px;font-weight:600}
+  .card h2 small{color:var(--muted);font-weight:400;margin-left:6px}
+  label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+  input[type=text],input[type=password],input[type=number],input[type=url],select{
+    width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);
+    border-radius:8px;padding:9px 10px;font-size:14px}
+  input[type=range]{width:100%}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  .row>div{flex:1;min-width:120px}
+  .chk{display:flex;align-items:center;gap:8px;margin:10px 0;color:var(--txt)}
+  .chk input{width:18px;height:18px}
+  button.btn{background:var(--accent2);border:1px solid var(--accent);color:#fff;
+    padding:10px 16px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600}
+  button.btn:hover{background:var(--accent)}
+  button.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
+  button.danger{background:#3a1d1d;border-color:#6b2b2b;color:#ff9a9a}
+  .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px}
+  .toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);
+    background:var(--panel2);border:1px solid var(--line);padding:10px 16px;border-radius:10px;
+    box-shadow:0 8px 30px rgba(0,0,0,.4);opacity:0;transition:opacity .25s;pointer-events:none;z-index:20}
+  .toast.show{opacity:1}
+  .toast.err{border-color:#6b2b2b;color:#ff9a9a}
+  /* live / ROI editor */
+  .stage{position:relative;width:100%;background:#000;border-radius:var(--r);overflow:hidden;
+    border:1px solid var(--line);touch-action:none;user-select:none}
+  .stage img{display:block;width:100%;height:auto}
+  #ovl{position:absolute;top:0;left:0;width:100%;height:100%;touch-action:none}
+  #ovl polygon{fill:rgba(91,107,122,.18);stroke:#5b6b7a;stroke-width:2;vector-effect:non-scaling-stroke;cursor:move}
+  #ovl polygon.occ{fill:rgba(255,91,91,.20);stroke:var(--busy)}
+  #ovl polygon.free{fill:rgba(46,204,113,.16);stroke:var(--ok)}
+  #ovl polygon.sel{stroke-width:3}
+  #ovl circle.vh{fill:var(--accent);stroke:#fff;stroke-width:1.5;vector-effect:non-scaling-stroke;cursor:grab}
+  #ovl text.lbl{fill:#fff;font-weight:600;paint-order:stroke;stroke:rgba(0,0,0,.65);stroke-width:3px;
+    font-family:'Geist',sans-serif;pointer-events:none}
+  .bigcount{text-align:center;padding:6px 0}
+  .bigcount .n{font-size:46px;font-weight:700;line-height:1}
+  .bigcount .l{color:var(--muted);font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  th,td{text-align:left;padding:6px 6px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:500}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+  .dot.occ{background:var(--busy)} .dot.free{background:var(--ok)} .dot.dis{background:var(--off)}
+  .kv{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:13px}
+  .kv span:first-child{color:var(--muted)}
+  .banner{background:#3a2e12;border:1px solid #5b4a1f;color:#ffd98a;padding:10px 12px;
+    border-radius:8px;margin-bottom:12px;font-size:13px;display:none}
+  .banner.show{display:block}
+  #logView{background:#0b0f14;border:1px solid var(--line);border-radius:8px;padding:10px;height:240px;overflow:auto;
+    font:11px/1.45 'Geist Mono',ui-monospace,monospace;color:#b9c6d3;white-space:pre-wrap;word-break:break-word;margin-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">ESP-Parking<b>Valet</b></div>
+  <span id="modePill" class="pill">…</span>
+  <span id="ipPill" class="pill">—</span>
+  <span id="rssiPill" class="pill">—</span>
+  <div class="spacer"></div>
+  <div class="count">cars <b id="hCount">–</b></div>
+</header>
+
+<nav id="tabs">
+  <button data-t="live" class="active">Live</button>
+  <button data-t="detect">Detection</button>
+  <button data-t="webhook">Webhook</button>
+  <button data-t="mqtt">MQTT</button>
+  <button data-t="wifi">WiFi</button>
+  <button data-t="image">Image</button>
+  <button data-t="system">System</button>
+</nav>
+
+<main>
+  <div id="pwBanner" class="banner">⚠ You are using the default password. Set a new admin password in <b>System</b>.</div>
+
+  <!-- LIVE -->
+  <section id="live" class="active">
+    <div class="card">
+      <div class="bigcount"><div class="n" id="bigCount">–</div><div class="l">cars detected</div></div>
+    </div>
+    <div class="card">
+      <h2>Live view <small>tap a slot · drag body to move · drag dots to reshape</small></h2>
+      <div class="stage" id="stage">
+        <img id="snap" alt="snapshot">
+        <svg id="ovl" preserveAspectRatio="none"></svg>
+      </div>
+      <div class="btns">
+        <button class="btn" id="addRoi">+ Add slot</button>
+        <button class="ghost" id="saveRoi">Save slots</button>
+        <button class="ghost" id="freezeBtn">Pause refresh</button>
+      </div>
+      <div id="roiEditor" style="display:none;margin-top:12px">
+        <div class="row">
+          <div><label>Name</label><input type="text" id="rName" maxlength="15"></div>
+          <div><label>Threshold (0 = use global)</label><input type="number" id="rThr" step="0.5" min="0"></div>
+        </div>
+        <div class="chk"><input type="checkbox" id="rEn"><label for="rEn" style="margin:0;color:var(--txt)">Enabled (counts toward total)</label></div>
+        <div class="btns">
+          <button class="ghost" id="addPt">+ point</button>
+          <button class="ghost" id="delPt">− point</button>
+          <button class="danger" id="delRoi">Delete slot</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Slots</h2>
+      <table><thead><tr><th>Slot</th><th>Edge</th><th>Thr</th><th>State</th></tr></thead>
+      <tbody id="slotTable"></tbody></table>
+    </div>
+  </section>
+
+  <!-- DETECTION -->
+  <section id="detect">
+    <div class="card">
+      <h2>Detection sensitivity</h2>
+      <div class="row">
+        <div><label>Global edge threshold</label><input type="number" id="c_edgeThreshold" step="0.5"></div>
+        <div><label>Hysteresis (0–0.9)</label><input type="number" id="c_hysteresis" step="0.05" min="0" max="0.9"></div>
+      </div>
+      <div class="row">
+        <div><label>Baseline EMA (0–0.2)</label><input type="number" id="c_baselineEma" step="0.005" min="0" max="0.2"></div>
+        <div><label>Stable frames (debounce)</label><input type="number" id="c_stableFrames" step="1" min="1" max="60"></div>
+      </div>
+      <label>Capture interval (ms)</label><input type="number" id="c_captureIntervalMs" step="100" min="200">
+      <div class="hint">Higher edge threshold = less sensitive. Watch the live Edge values: empty asphalt is low, a parked car is high. Set the threshold between the two.</div>
+    </div>
+    <div class="card">
+      <h2>Send trigger</h2>
+      <label>Trigger mode</label>
+      <select id="c_triggerMode"><option value="0">On any count change</option><option value="1">When count crosses threshold</option></select>
+      <div class="row">
+        <div><label>Threshold N</label><input type="number" id="c_triggerThreshold" step="1" min="0"></div>
+        <div><label>Min send interval (ms)</label><input type="number" id="c_minSendIntervalMs" step="500" min="0"></div>
+      </div>
+      <label>Heartbeat interval (s, 0 = off)</label><input type="number" id="c_heartbeatIntervalS" step="60" min="0">
+      <div class="btns"><button class="btn" id="saveDetect">Save</button></div>
+    </div>
+  </section>
+
+  <!-- WEBHOOK -->
+  <section id="webhook">
+    <div class="card">
+      <h2>Image webhook</h2>
+      <div class="chk"><input type="checkbox" id="c_whEnabled"><label for="c_whEnabled" style="margin:0;color:var(--txt)">Enabled</label></div>
+      <label>Webhook URL</label><input type="url" id="c_whUrl" placeholder="http://192.168.1.197:5678/webhook/parking-cam">
+      <div class="row">
+        <div><label>Auth header name</label><input type="text" id="c_whAuthHeaderName" placeholder="Authorization or X-API-Key"></div>
+        <div><label>Auth header value</label><input type="password" id="c_whAuthHeaderValue" placeholder="unchanged"></div>
+      </div>
+      <div class="chk"><input type="checkbox" id="c_whTlsInsecure"><label for="c_whTlsInsecure" style="margin:0;color:var(--txt)">Skip TLS cert check (self-signed https)</label></div>
+      <div class="btns">
+        <button class="btn" id="saveWebhook">Save</button>
+        <button class="ghost" id="testWebhook">Send test</button>
+      </div>
+      <div class="hint" id="lastSend"></div>
+    </div>
+    <div class="card">
+      <h2>Stats webhook <small>periodic telemetry (JSON)</small></h2>
+      <div class="chk"><input type="checkbox" id="c_statsEnabled"><label for="c_statsEnabled" style="margin:0;color:var(--txt)">Enabled</label></div>
+      <label>Stats URL</label><input type="url" id="c_statsUrl" placeholder="https://hooks.example.com/webhook/parking-stats">
+      <label>Interval (seconds)</label><input type="number" id="c_statsIntervalS" min="10" step="10">
+      <div class="row">
+        <div><label>Auth header name</label><input type="text" id="c_statsAuthHeaderName" placeholder="X-API-Key"></div>
+        <div><label>Auth header value</label><input type="password" id="c_statsAuthHeaderValue" placeholder="unchanged"></div>
+      </div>
+      <div class="chk"><input type="checkbox" id="c_statsTlsInsecure"><label for="c_statsTlsInsecure" style="margin:0;color:var(--txt)">Skip TLS cert check (self-signed https)</label></div>
+      <div class="btns">
+        <button class="btn" id="saveStats">Save</button>
+        <button class="ghost" id="testStats">Send stats now</button>
+      </div>
+      <div class="hint">Posts JSON: ip, rssi, ssid, mac, uptime, heap/psram, car count, version/build, reset reason, and more.</div>
+    </div>
+  </section>
+
+  <!-- MQTT -->
+  <section id="mqtt">
+    <div class="card">
+      <h2>MQTT <small id="mqttStat">—</small></h2>
+      <div class="chk"><input type="checkbox" id="c_mqttEnabled"><label for="c_mqttEnabled" style="margin:0;color:var(--txt)">Enabled</label></div>
+      <div class="row">
+        <div><label>Broker host</label><input type="text" id="c_mqttHost" placeholder="192.168.1.x or mqtt.example.com"></div>
+        <div><label>Port</label><input type="number" id="c_mqttPort" min="1" max="65535"></div>
+      </div>
+      <div class="chk"><input type="checkbox" id="c_mqttTls"><label for="c_mqttTls" style="margin:0;color:var(--txt)">Use TLS (mqtts) — typically port 8883</label></div>
+      <div class="chk"><input type="checkbox" id="c_mqttTlsInsecure"><label for="c_mqttTlsInsecure" style="margin:0;color:var(--txt)">Skip TLS cert check (self-signed)</label></div>
+      <div class="row">
+        <div><label>Username</label><input type="text" id="c_mqttUser"></div>
+        <div><label>Password</label><input type="password" id="c_mqttPass" placeholder="unchanged"></div>
+      </div>
+      <label>Base topic</label><input type="text" id="c_mqttBaseTopic" placeholder="parking-valet">
+      <div class="chk"><input type="checkbox" id="c_mqttDiscovery"><label for="c_mqttDiscovery" style="margin:0;color:var(--txt)">Home Assistant auto-discovery</label></div>
+      <div class="row">
+        <div><label>Discovery prefix</label><input type="text" id="c_mqttDiscoveryPrefix" placeholder="homeassistant"></div>
+        <div><label>Publish interval (s)</label><input type="number" id="c_mqttIntervalS" min="5" step="5"></div>
+      </div>
+      <div class="btns">
+        <button class="btn" id="saveMqtt">Save</button>
+        <button class="ghost" id="testMqtt">Publish now</button>
+      </div>
+      <div class="hint">Publishes each field to its own topic (e.g. <code>parking-valet/count</code>) and, with discovery on, creates one Home Assistant device — with firmware version and a GitHub link. Same info as the webhooks; the photo stays on the image webhook.</div>
+    </div>
+  </section>
+
+  <!-- WIFI -->
+  <section id="wifi">
+    <div class="card">
+      <h2>WiFi (station)</h2>
+      <label>SSID</label><input type="text" id="c_staSsid">
+      <label>Password</label><input type="password" id="c_staPass" placeholder="unchanged">
+      <label>Hostname</label><input type="text" id="c_hostname">
+      <div class="hint">Saving WiFi settings reboots the device to reconnect.</div>
+    </div>
+    <div class="card">
+      <h2>Access point (config fallback)</h2>
+      <label>AP SSID</label><input type="text" id="c_apSsid">
+      <label>AP password (≥ 8 chars)</label><input type="password" id="c_apPass" placeholder="unchanged">
+      <div class="btns"><button class="btn" id="saveWifi">Save &amp; reboot</button></div>
+    </div>
+  </section>
+
+  <!-- IMAGE -->
+  <section id="image">
+    <div class="card">
+      <h2>Image &amp; sensor</h2>
+      <label>Resolution</label>
+      <select id="c_framesize">
+        <option value="5">QVGA 320×240</option>
+        <option value="6">CIF 400×296</option>
+        <option value="8">VGA 640×480</option>
+        <option value="9">SVGA 800×600</option>
+        <option value="10">XGA 1024×768</option>
+        <option value="12">SXGA 1280×1024</option>
+        <option value="13">UXGA 1600×1200</option>
+      </select>
+      <label>JPEG quality (8 best – 40 small)</label><input type="number" id="c_jpegQuality" min="8" max="63" step="1">
+      <div class="row">
+        <div><label>Brightness (-2..2)</label><input type="number" id="c_brightness" min="-2" max="2" step="1"></div>
+        <div><label>Contrast (-2..2)</label><input type="number" id="c_contrast" min="-2" max="2" step="1"></div>
+        <div><label>Saturation (-2..2)</label><input type="number" id="c_saturation" min="-2" max="2" step="1"></div>
+      </div>
+      <div class="chk"><input type="checkbox" id="c_vFlip"><label for="c_vFlip" style="margin:0;color:var(--txt)">Vertical flip</label></div>
+      <div class="chk"><input type="checkbox" id="c_hMirror"><label for="c_hMirror" style="margin:0;color:var(--txt)">Horizontal mirror</label></div>
+      <div class="chk"><input type="checkbox" id="c_awb"><label for="c_awb" style="margin:0;color:var(--txt)">Auto white balance</label></div>
+      <div class="chk"><input type="checkbox" id="c_aec"><label for="c_aec" style="margin:0;color:var(--txt)">Auto exposure</label></div>
+      <label>Autofocus (OV5640)</label>
+      <select id="c_afMode"><option value="0">Off / fixed</option><option value="1">Auto once</option><option value="2">Continuous</option></select>
+      <div class="btns"><button class="btn" id="saveImage">Save</button><button class="ghost" id="focusNow">Focus now</button></div>
+      <div class="hint">Higher resolution = sharper but slower; SVGA is a good default. For a fixed scene use <b>Auto once</b> — continuous AF can hunt and blur frames mid-analysis. (Needs AF-VCC powered on the module.)</div>
+    </div>
+  </section>
+
+  <!-- SYSTEM -->
+  <section id="system">
+    <div class="card">
+      <h2>Status</h2>
+      <div class="kv"><span>Firmware</span><span id="sVer">—</span></div>
+      <div class="kv"><span>Uptime</span><span id="sUp">—</span></div>
+      <div class="kv"><span>Free heap</span><span id="sHeap">—</span></div>
+      <div class="kv"><span>Free PSRAM</span><span id="sPsram">—</span></div>
+      <div class="kv"><span>Analysis</span><span id="sCv">—</span></div>
+      <div class="kv"><span>Focus</span><span id="sAf">—</span></div>
+      <div class="kv"><span>MQTT</span><span id="sMqtt">—</span></div>
+    </div>
+    <div class="card">
+      <h2>Serial console <small>device log · read-only</small></h2>
+      <pre id="logView"></pre>
+      <div class="btns">
+        <button class="ghost" id="logPause">Pause</button>
+        <button class="ghost" id="logClear">Clear view</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Connectivity watchdog</h2>
+      <label>Auto-reboot if offline for (minutes · 0 = off)</label>
+      <input type="number" id="c_offlineRebootMin" min="0" max="1440" step="1">
+      <div class="btns"><button class="btn" id="saveWatchdog">Save</button></div>
+      <div class="hint">If the device loses its WiFi connection for this many minutes it reboots to recover, and keeps retrying until it's back online. 0 disables it.</div>
+    </div>
+    <div class="card">
+      <h2>Admin password</h2>
+      <label>Username</label><input type="text" id="c_adminUser">
+      <label>New password</label><input type="password" id="c_adminPass" placeholder="unchanged">
+      <div class="btns"><button class="btn" id="saveAdmin">Save</button></div>
+    </div>
+    <div class="card">
+      <h2>Firmware update (OTA)</h2>
+      <input type="file" id="otaFile" accept=".bin">
+      <div class="btns"><button class="btn" id="otaBtn">Upload &amp; flash</button></div>
+      <div class="hint" id="otaStatus"></div>
+    </div>
+    <div class="card">
+      <h2>Backup &amp; restore</h2>
+      <div class="btns"><button class="btn" id="backupBtn">Download backup</button></div>
+      <label>Restore from file</label>
+      <input type="file" id="restoreFile" accept=".json,application/json">
+      <div class="btns"><button class="ghost" id="restoreBtn">Restore &amp; reboot</button></div>
+      <div class="hint">Backup is the full config (WiFi, webhooks, MQTT, ROIs, passwords) — keep it safe, it contains secrets.</div>
+    </div>
+    <div class="card">
+      <h2>Actions</h2>
+      <div class="btns">
+        <button class="ghost" id="rebootBtn">Reboot</button>
+        <button class="ghost" id="apBtn">Enter AP config mode</button>
+        <button class="danger" id="factoryBtn">Factory reset</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+// fetch with a timeout so one hung request can't stall the whole queue
+function fetchT(url,opts,ms){ const c=new AbortController(); const t=setTimeout(()=>c.abort(),ms||8000);
+  return fetch(url,Object.assign({},opts,{signal:c.signal})).finally(()=>clearTimeout(t)); }
+// The ESP32 WebServer is single-connection: serialize ALL device requests onto
+// one in-flight chain so concurrent polls/snapshots never collide with a save.
+let _chain = Promise.resolve();
+function q(fn){ const run=_chain.then(fn,fn); _chain=run.then(()=>{},()=>{}); return run; }
+const api = (p,o) => q(()=> fetchT(p,o).then(r => r.ok ? r.json() : r.json().catch(()=>({})).then(j=>Promise.reject(j))));
+let cfg = {}, st = {}, sel = -1, rois = [], freeze = false, dirty = false, activeTab = "live";
+
+function toast(msg, err){ const t=$("#toast"); t.textContent=msg; t.className="toast show"+(err?" err":""); setTimeout(()=>t.className="toast",2200); }
+
+// ---- tabs ----
+$("#tabs").addEventListener("click", e=>{
+  const b=e.target.closest("button"); if(!b) return;
+  activeTab=b.dataset.t;
+  document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x===b));
+  document.querySelectorAll("section").forEach(s=>s.classList.toggle("active",s.id===b.dataset.t));
+});
+
+// ---- form binding ----
+const F = ["edgeThreshold","hysteresis","baselineEma","stableFrames","captureIntervalMs",
+  "triggerMode","triggerThreshold","minSendIntervalMs","heartbeatIntervalS",
+  "whEnabled","whUrl","whAuthHeaderName","whAuthHeaderValue","whTlsInsecure",
+  "statsEnabled","statsUrl","statsIntervalS","statsAuthHeaderName","statsAuthHeaderValue","statsTlsInsecure",
+  "mqttEnabled","mqttHost","mqttPort","mqttTls","mqttTlsInsecure","mqttUser","mqttPass","mqttBaseTopic","mqttDiscovery","mqttDiscoveryPrefix","mqttIntervalS",
+  "staSsid","staPass","hostname","offlineRebootMin","apSsid","apPass",
+  "framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode",
+  "adminUser","adminPass"];
+const SECRET = ["whAuthHeaderValue","statsAuthHeaderValue","mqttPass","staPass","apPass","adminPass"];
+
+function fill(){
+  for(const k of F){ const el=$("#c_"+k); if(!el||!(k in cfg)) continue;
+    if(el.type==="checkbox") el.checked=!!cfg[k];
+    else if(SECRET.includes(k)) el.value="";   // never prefill secrets
+    else el.value=cfg[k];
+  }
+  $("#c_triggerMode").value=String(cfg.triggerMode);
+  $("#c_framesize").value=String(cfg.framesize);
+  $("#c_afMode").value=String(cfg.afMode);
+}
+function collect(keys){
+  const o={};
+  for(const k of keys){ const el=$("#c_"+k); if(!el) continue;
+    if(el.type==="checkbox") o[k]=el.checked;
+    else if(SECRET.includes(k)){ if(el.value!=="") o[k]=el.value; }   // omit blank secrets
+    else if(el.tagName==="SELECT") o[k]=parseInt(el.value,10);        // dropdowns are numeric (framesize, triggerMode)
+    else if(el.type==="number") o[k]=parseFloat(el.value);
+    else o[k]=el.value;
+  }
+  return o;
+}
+async function save(keys, opts){
+  const body=JSON.stringify(collect(keys));
+  for(let attempt=1; attempt<=3; attempt++){
+    try{ const r=await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body});
+      toast("Saved"); if(r.reboot) toast("Rebooting…"); if(opts&&opts.after) opts.after(r);
+      await loadCfg(); return;
+    }catch(e){ if(attempt<3) await new Promise(res=>setTimeout(res,300)); }
+  }
+  toast("Save failed",true);
+}
+
+async function loadCfg(){ cfg=await api("/api/config"); fill();
+  if(!dirty){ rois=(cfg.rois||[]).map(r=>({name:r.name,points:(r.points||[]).map(p=>({x:p.x,y:p.y})),threshold:r.threshold||0,enabled:r.enabled})); renderRois(); }
+  $("#pwBanner").classList.toggle("show", !!st.mustChangePass); }
+
+$("#saveDetect").onclick=()=>save(["edgeThreshold","hysteresis","baselineEma","stableFrames","captureIntervalMs","triggerMode","triggerThreshold","minSendIntervalMs","heartbeatIntervalS"]);
+$("#saveWebhook").onclick=()=>save(["whEnabled","whUrl","whAuthHeaderName","whAuthHeaderValue","whTlsInsecure"]);
+$("#saveStats").onclick=()=>save(["statsEnabled","statsUrl","statsIntervalS","statsAuthHeaderName","statsAuthHeaderValue","statsTlsInsecure"]);
+$("#testStats").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_stats"})}); toast(r.ok?("Stats sent · HTTP "+r.code):("Stats failed · "+r.code),!r.ok);}catch(e){toast("Stats failed",true);} };
+$("#saveMqtt").onclick=()=>save(["mqttEnabled","mqttHost","mqttPort","mqttTls","mqttTlsInsecure","mqttUser","mqttPass","mqttBaseTopic","mqttDiscovery","mqttDiscoveryPrefix","mqttIntervalS"]);
+$("#testMqtt").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_mqtt"})}); toast(r.ok?"Published":"MQTT not connected",!r.ok);}catch(e){toast("MQTT failed",true);} };
+$("#saveImage").onclick=()=>save(["framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode"]);
+$("#focusNow").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"af_focus"})}); toast(r.ok?"Focusing…":"AF unavailable",!r.ok);}catch(e){toast("AF failed",true);} };
+$("#saveAdmin").onclick=()=>save(["adminUser","adminPass"]);
+$("#saveWifi").onclick=()=>save(["staSsid","staPass","hostname","apSsid","apPass"]);
+$("#saveWatchdog").onclick=()=>save(["offlineRebootMin"]);
+
+$("#testWebhook").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_webhook"})}); toast(r.ok?("Test sent · HTTP "+r.code):("Test failed · "+r.code),!r.ok);}catch(e){toast("Test failed",true);} };
+
+function action(a,msg,confirmMsg){ return async()=>{ if(confirmMsg&&!confirm(confirmMsg)) return;
+  try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:a})}); toast(msg);}catch(e){toast("Failed",true);} }; }
+$("#rebootBtn").onclick=action("reboot","Rebooting…");
+$("#apBtn").onclick=action("ap_mode","Switching to AP mode…","Switch to AP config mode? You'll need to join the device's WiFi to reconnect.");
+$("#factoryBtn").onclick=action("factory_reset","Factory reset…","Erase ALL settings and reboot?");
+$("#backupBtn").onclick=()=>{ window.location='/api/backup'; };
+$("#restoreBtn").onclick=async()=>{ const f=$("#restoreFile").files[0]; if(!f){toast("Pick a backup .json first",true);return;}
+  try{ const txt=await f.text(); const r=await api("/api/restore",{method:"POST",headers:{"Content-Type":"application/json"},body:txt}); toast(r.ok?"Restored, rebooting…":"Restore failed",!r.ok);}catch(e){toast("Restore failed",true);} };
+
+// ---- OTA ----
+$("#otaBtn").onclick=()=>{ const f=$("#otaFile").files[0]; if(!f){toast("Pick a .bin first",true);return;}
+  const fd=new FormData(); fd.append("update",f,f.name); $("#otaStatus").textContent="Uploading…";
+  fetch("/update",{method:"POST",body:fd}).then(r=>r.json()).then(j=>{ $("#otaStatus").textContent=j.ok?"Flashed, rebooting…":"Update failed"; toast(j.ok?"Flashed":"Update failed",!j.ok);})
+   .catch(()=>{$("#otaStatus").textContent="Update failed";toast("Update failed",true);}); };
+
+// ---- live snapshot ----
+const snap=$("#snap");
+let _snapBusy=false;
+async function refreshSnap(){
+  if(freeze || activeTab!=="live" || _snapBusy) return;
+  _snapBusy=true;
+  try{ const u=await q(async()=>{ const r=await fetchT("/snapshot?t="+Date.now()); if(!r.ok) throw 0;
+    const b=await r.blob(); return URL.createObjectURL(b); });
+    snap.onload=()=>URL.revokeObjectURL(u); snap.src=u;
+  }catch(e){} finally{ _snapBusy=false; }
+}
+$("#freezeBtn").onclick=()=>{ freeze=!freeze; $("#freezeBtn").textContent=freeze?"Resume refresh":"Pause refresh"; };
+
+// ---- serial console ----
+let logPaused=false, _logBusy=false;
+async function pollLog(){ if(logPaused || activeTab!=="system" || _logBusy) return; _logBusy=true;
+  try{ const t=await q(async()=>{ const r=await fetchT("/api/log"); return r.ok? r.text():""; });
+    const v=$("#logView"); const atBottom=v.scrollTop+v.clientHeight>=v.scrollHeight-24;
+    v.textContent=t; if(atBottom) v.scrollTop=v.scrollHeight; }catch(e){} finally{ _logBusy=false; }
+}
+$("#logPause").onclick=()=>{ logPaused=!logPaused; $("#logPause").textContent=logPaused?"Resume":"Pause"; };
+$("#logClear").onclick=()=>{ $("#logView").textContent=""; };
+
+// ---- ROI / polygon editor ----
+const ovl=$("#ovl"), stage=$("#stage");
+let vbW=400, vbH=300;
+function syncViewBox(){
+  vbW=snap.naturalWidth||vbW; vbH=snap.naturalHeight||vbH;
+  ovl.setAttribute("viewBox","0 0 "+vbW+" "+vbH);
+}
+snap.addEventListener("load",()=>{ syncViewBox(); renderRois(); });
+function centroid(p){ let x=0,y=0; p.forEach(q=>{x+=q.x;y+=q.y;}); return {x:x/p.length,y:y/p.length}; }
+function renderRois(){
+  syncViewBox();
+  let s="";
+  rois.forEach((r,i)=>{
+    const sd=st.slots&&st.slots[i];
+    let cls="roi"+(i===sel?" sel":"");
+    if(r.enabled!==false && sd) cls+= sd.occupied?" occ":" free";
+    const pts=r.points.map(p=>(p.x*vbW).toFixed(1)+","+(p.y*vbH).toFixed(1)).join(" ");
+    s+='<polygon class="'+cls+'" points="'+pts+'" data-i="'+i+'"/>';
+    const c=centroid(r.points), lbl=r.name+(sd&&sd.edge!=null?(" "+sd.edge.toFixed(0)):"");
+    s+='<text class="lbl" x="'+(c.x*vbW).toFixed(1)+'" y="'+(c.y*vbH).toFixed(1)+'" font-size="'+(vbH*0.05).toFixed(1)+'" text-anchor="middle">'+lbl+'</text>';
+    if(i===sel) r.points.forEach((p,j)=>{ s+='<circle class="vh" cx="'+(p.x*vbW).toFixed(1)+'" cy="'+(p.y*vbH).toFixed(1)+'" r="'+(vbW*0.013).toFixed(2)+'" data-i="'+i+'" data-v="'+j+'"/>'; });
+  });
+  ovl.innerHTML=s;
+}
+function selectRoi(i){ sel=i;
+  const ed=$("#roiEditor");
+  if(i<0||i>=rois.length){ ed.style.display="none"; renderRois(); return; }
+  ed.style.display="block"; const r=rois[i];
+  $("#rName").value=r.name; $("#rThr").value=r.threshold||0; $("#rEn").checked=r.enabled!==false;
+  renderRois();
+}
+$("#rName").oninput=()=>{ if(sel>=0){rois[sel].name=$("#rName").value;dirty=true;renderRois();} };
+$("#rThr").oninput=()=>{ if(sel>=0){rois[sel].threshold=parseFloat($("#rThr").value)||0;dirty=true;} };
+$("#rEn").onchange=()=>{ if(sel>=0){rois[sel].enabled=$("#rEn").checked;dirty=true;renderRois();} };
+$("#delRoi").onclick=()=>{ if(sel>=0){rois.splice(sel,1);dirty=true;selectRoi(-1);} };
+$("#addRoi").onclick=()=>{ rois.push({name:"S"+(rois.length+1),points:[{x:.40,y:.40},{x:.60,y:.40},{x:.60,y:.60},{x:.40,y:.60}],threshold:0,enabled:true}); dirty=true; selectRoi(rois.length-1); };
+$("#addPt").onclick=()=>{ if(sel<0)return; const p=rois[sel].points; if(p.length>=8){toast("Max 8 points",true);return;}
+  let bi=0,bd=-1; for(let a=0;a<p.length;a++){ const b=(a+1)%p.length,dx=p[a].x-p[b].x,dy=p[a].y-p[b].y,d=dx*dx+dy*dy; if(d>bd){bd=d;bi=a;} }
+  const nb=(bi+1)%p.length; p.splice(bi+1,0,{x:(p[bi].x+p[nb].x)/2,y:(p[bi].y+p[nb].y)/2}); dirty=true; renderRois(); };
+$("#delPt").onclick=()=>{ if(sel<0)return; const p=rois[sel].points; if(p.length<=3){toast("Min 3 points",true);return;} p.pop(); dirty=true; renderRois(); };
+$("#saveRoi").onclick=async()=>{ try{ await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rois:rois.map(r=>({name:r.name,points:r.points,threshold:r.threshold,enabled:r.enabled}))})}); dirty=false; toast("Slots saved"); await loadCfg(); }catch(e){ toast("Save failed",true);} };
+
+// pointer drag — capture on the stable <svg> so a mid-drag re-render never drops
+// the gesture (the old per-rectangle capture detached on render and "stuck").
+let drag=null;
+ovl.addEventListener("pointerdown",e=>{
+  const t=e.target;
+  if(t.classList&&t.classList.contains("vh")){
+    const i=+t.dataset.i,v=+t.dataset.v; if(sel!==i) selectRoi(i);
+    drag={i,v,mode:"vertex",sx:rois[i].points[v].x,sy:rois[i].points[v].y};
+  } else if(t.tagName&&t.tagName.toLowerCase()==="polygon"){
+    const i=+t.dataset.i; if(sel!==i) selectRoi(i);
+    drag={i,mode:"body",start:rois[i].points.map(p=>({x:p.x,y:p.y}))};
+  } else return;
+  drag.rect=stage.getBoundingClientRect(); drag.ox=e.clientX; drag.oy=e.clientY;
+  ovl.setPointerCapture(e.pointerId); e.preventDefault();
+});
+ovl.addEventListener("pointermove",e=>{
+  if(!drag) return;
+  const dx=(e.clientX-drag.ox)/drag.rect.width, dy=(e.clientY-drag.oy)/drag.rect.height;
+  const r=rois[drag.i];
+  if(drag.mode==="vertex"){
+    r.points[drag.v].x=Math.min(Math.max(0,drag.sx+dx),1);
+    r.points[drag.v].y=Math.min(Math.max(0,drag.sy+dy),1);
+  } else {
+    const xs=drag.start.map(p=>p.x), ys=drag.start.map(p=>p.y);
+    let ax=dx,ay=dy;
+    if(Math.min(...xs)+ax<0) ax=-Math.min(...xs);
+    if(Math.max(...xs)+ax>1) ax=1-Math.max(...xs);
+    if(Math.min(...ys)+ay<0) ay=-Math.min(...ys);
+    if(Math.max(...ys)+ay>1) ay=1-Math.max(...ys);
+    r.points.forEach((p,j)=>{ p.x=drag.start[j].x+ax; p.y=drag.start[j].y+ay; });
+  }
+  dirty=true; renderRois();
+});
+function endDrag(e){ if(drag){ try{ovl.releasePointerCapture(e.pointerId);}catch(_){}} drag=null; }
+ovl.addEventListener("pointerup",endDrag);
+ovl.addEventListener("pointercancel",endDrag);
+
+// ---- state polling ----
+function fmtUp(s){ const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  return (d?d+"d ":"")+(h?h+"h ":"")+m+"m"; }
+async function poll(){
+  try{
+    st=await api("/api/state");
+    $("#modePill").textContent=st.mode==="ap"?"AP / setup":"online";
+    $("#modePill").className="pill "+(st.mode==="ap"?"ap":"sta");
+    $("#ipPill").textContent=st.ip+(st.ssid?(" · "+st.ssid):"");
+    const rp=$("#rssiPill");
+    if(st.mode==="ap"){ rp.style.display="none"; }
+    else { rp.style.display=""; rp.textContent="📶 "+st.rssi+" dBm"; rp.className="pill "+(st.rssi>=-60?"sta":(st.rssi<=-78?"ap":"")); }
+    const c=st.cv&&st.cv.valid?st.cv.count:null;
+    $("#hCount").textContent=c==null?"–":c; $("#bigCount").textContent=c==null?"–":c;
+    // Live values come from st.slots; the editable geometry lives in `rois` and
+    // is only synced from the server (via loadCfg) when there are no unsaved edits.
+    renderRois();
+    if(st.slots){
+      const tb=$("#slotTable"); tb.innerHTML="";
+      st.slots.forEach(s=>{ const occ=s.enabled===false?"dis":(s.occupied?"occ":"free");
+        tb.insertAdjacentHTML("beforeend",`<tr><td>${s.name}</td><td>${s.edge!=null?s.edge.toFixed(1):"–"}</td><td>${s.threshold!=null?s.threshold.toFixed(0):"–"}</td><td><span class="dot ${occ}"></span>${s.enabled===false?"disabled":(s.occupied?"occupied":"free")}</td></tr>`);
+      });
+    }
+    // system
+    $("#sVer").textContent=st.version + (st.build ? " · " + st.build : ""); $("#sUp").textContent=fmtUp(st.uptimeS);
+    $("#sHeap").textContent=(st.heapFree/1024|0)+" KB"; $("#sPsram").textContent=(st.psramFree/1024|0)+" KB";
+    if(st.cv) $("#sCv").textContent=st.cv.valid?`${st.cv.decW}×${st.cv.decH} · ${st.cv.tookMs} ms`:"—";
+    if(st.afStatus!=null){ const a=st.afStatus; $("#sAf").textContent=a<0?"n/a":(a===16?"focused":(a===112?"idle":"busy (0x"+a.toString(16)+")")); }
+    if(st.mqttEnabled!==undefined){ const t=st.mqttEnabled?(st.mqttConnected?"connected":"connecting…"):"off"; $("#sMqtt").textContent=t; const ms=$("#mqttStat"); if(ms)ms.textContent=t; }
+    if(st.lastSend && st.lastSend.code) $("#lastSend").textContent=`Last send: ${st.lastSend.event} · count ${st.lastSend.count} · HTTP ${st.lastSend.code} · ${st.lastSend.agoS}s ago`;
+    $("#pwBanner").classList.toggle("show", !!st.mustChangePass);
+  }catch(e){ $("#modePill").textContent="offline"; }
+}
+
+// ---- boot ----
+(async()=>{ await poll(); await loadCfg(); renderRois();
+  refreshSnap(); pollLog(); setInterval(poll,1000); setInterval(refreshSnap,1500); setInterval(pollLog,2500); })();
+</script>
+</body>
+</html>

@@ -1,0 +1,89 @@
+<svg viewBox="0 0 1000 500" xmlns="http://www.w3.org/2000/svg" font-family="'Geist', system-ui, sans-serif">
+  <defs>
+    <style><![CDATA[@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap');]]></style>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.9" fill="rgba(241,239,231,0.10)"/>
+    </pattern>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#a8a69d"/></marker>
+    <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#ff6a30"/></marker>
+  </defs>
+
+  <rect width="100%" height="100%" fill="#1c1a17"/>
+  <rect width="100%" height="100%" fill="url(#dots)" opacity="0.55"/>
+
+  <!-- Header -->
+  <text x="40" y="44" fill="#a8a69d" font-size="11" font-family="'Geist Mono', monospace" letter-spacing="0.18em">OPERATING MODES · WIFI PROVISIONING &amp; CONFIG ACCESS</text>
+  <text x="40" y="80" fill="#f1efe7" font-size="28" font-family="'Instrument Serif', serif">How it connects — and how you get back in</text>
+
+  <!-- Transitions (behind states) -->
+  <line x1="70" y1="200" x2="104" y2="200" stroke="#a8a69d" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="284" y1="200" x2="388" y2="200" stroke="#a8a69d" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="194" y1="240" x2="194" y2="320" stroke="#a8a69d" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+  <path d="M 478 240 C 478 360, 312 360, 312 360" fill="none" stroke="#ff6a30" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+  <path d="M 96 360 C 48 360, 48 200, 104 200" fill="none" stroke="#a8a69d" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+
+  <!-- Transition labels -->
+  <rect x="40" y="180" width="60" height="12" rx="2" fill="#1c1a17"/>
+  <text x="70" y="189" fill="#a8a69d" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">POWER ON</text>
+
+  <rect x="306" y="184" width="60" height="12" rx="2" fill="#1c1a17"/>
+  <text x="336" y="193" fill="#a8a69d" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">WIFI OK</text>
+
+  <rect x="200" y="272" width="128" height="12" rx="2" fill="#1c1a17"/>
+  <text x="264" y="281" fill="#a8a69d" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">TIMEOUT / NO CREDS</text>
+
+  <rect x="360" y="296" width="132" height="12" rx="2" fill="#1c1a17"/>
+  <text x="426" y="305" fill="#ff6a30" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">BOOT HELD ≥ 5 s · REBOOT</text>
+
+  <rect x="14" y="272" width="68" height="12" rx="2" fill="#1c1a17"/>
+  <text x="48" y="281" fill="#a8a69d" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SAVE · REBOOT</text>
+
+  <!-- Start dot -->
+  <circle cx="64" cy="200" r="6" fill="#f1efe7"/>
+
+  <!-- State: Connecting -->
+  <rect x="104" y="160" width="180" height="80" rx="8" fill="#2a2723" stroke="#f1efe7" stroke-width="1"/>
+  <rect x="112" y="168" width="40" height="12" rx="2" fill="transparent" stroke="rgba(241,239,231,0.40)" stroke-width="0.8"/>
+  <text x="132" y="177" fill="#f1efe7" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STATE</text>
+  <text x="194" y="206" fill="#f1efe7" font-size="14" font-weight="600" text-anchor="middle">Connecting</text>
+  <text x="194" y="224" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">STA · join WiFi (~25 s)</text>
+
+  <!-- State: Run mode -->
+  <rect x="388" y="160" width="180" height="80" rx="8" fill="#2a2723" stroke="#f1efe7" stroke-width="1"/>
+  <rect x="396" y="168" width="40" height="12" rx="2" fill="transparent" stroke="rgba(241,239,231,0.40)" stroke-width="0.8"/>
+  <text x="416" y="177" fill="#f1efe7" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STATE</text>
+  <text x="478" y="206" fill="#f1efe7" font-size="14" font-weight="600" text-anchor="middle">Run mode</text>
+  <text x="478" y="224" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">monitor + web UI (Digest)</text>
+
+  <!-- State: AP config (focal coral) -->
+  <rect x="96" y="320" width="216" height="96" rx="8" fill="rgba(255,106,48,0.08)" stroke="#ff6a30" stroke-width="1"/>
+  <rect x="104" y="328" width="40" height="12" rx="2" fill="transparent" stroke="rgba(255,106,48,0.50)" stroke-width="0.8"/>
+  <text x="124" y="337" fill="#ff6a30" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">STATE</text>
+  <text x="204" y="364" fill="#f1efe7" font-size="14" font-weight="600" text-anchor="middle">AP config mode</text>
+  <text x="204" y="382" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">SoftAP + captive portal</text>
+  <text x="204" y="398" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">ESP-ParkingValet-Setup</text>
+
+  <!-- Annotation -->
+  <text x="600" y="356" fill="#a8a69d" font-size="13" font-family="'Instrument Serif', serif" font-style="italic">Hold BOOT 5 s any time to</text>
+  <text x="600" y="376" fill="#a8a69d" font-size="13" font-family="'Instrument Serif', serif" font-style="italic">drop back into setup — the LED</text>
+  <text x="600" y="396" fill="#a8a69d" font-size="13" font-family="'Instrument Serif', serif" font-style="italic">slow-blinks to confirm.</text>
+
+  <!-- Legend -->
+  <line x1="40" y1="446" x2="960" y2="446" stroke="rgba(241,239,231,0.10)" stroke-width="0.8"/>
+  <text x="40" y="462" fill="#a8a69d" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.16em">LEGEND</text>
+
+  <circle cx="46" cy="480" r="5" fill="#f1efe7"/>
+  <text x="60" y="483" fill="#a8a69d" font-size="8.5">Start (power on)</text>
+
+  <rect x="200" y="474" width="24" height="12" rx="4" fill="#2a2723" stroke="#f1efe7" stroke-width="1"/>
+  <text x="232" y="483" fill="#a8a69d" font-size="8.5">State</text>
+
+  <rect x="320" y="474" width="24" height="12" rx="4" fill="rgba(255,106,48,0.08)" stroke="#ff6a30" stroke-width="1"/>
+  <text x="352" y="483" fill="#a8a69d" font-size="8.5">Config mode (focal)</text>
+
+  <line x1="520" y1="480" x2="548" y2="480" stroke="#ff6a30" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+  <text x="556" y="483" fill="#a8a69d" font-size="8.5">BOOT long-press</text>
+
+  <line x1="700" y1="480" x2="728" y2="480" stroke="#a8a69d" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+  <text x="736" y="483" fill="#a8a69d" font-size="8.5">Reboot / fallback</text>
+</svg>

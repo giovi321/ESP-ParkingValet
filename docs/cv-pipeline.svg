@@ -1,0 +1,82 @@
+<svg viewBox="0 0 1000 760" xmlns="http://www.w3.org/2000/svg" font-family="'Geist', system-ui, sans-serif">
+  <defs>
+    <style><![CDATA[@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap');]]></style>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.9" fill="rgba(241,239,231,0.10)"/>
+    </pattern>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#a8a69d"/></marker>
+    <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#ff6a30"/></marker>
+  </defs>
+
+  <rect width="100%" height="100%" fill="#1c1a17"/>
+  <rect width="100%" height="100%" fill="url(#dots)" opacity="0.55"/>
+
+  <!-- Header -->
+  <text x="40" y="44" fill="#a8a69d" font-size="11" font-family="'Geist Mono', monospace" letter-spacing="0.18em">ON-DEVICE PIPELINE · CLASSICAL CV, NO MODEL, NO CLOUD</text>
+  <text x="40" y="80" fill="#f1efe7" font-size="28" font-family="'Instrument Serif', serif">The detection loop</text>
+
+  <!-- Arrows (behind nodes) -->
+  <line x1="500" y1="168" x2="500" y2="204" stroke="#a8a69d" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="500" y1="252" x2="500" y2="288" stroke="#a8a69d" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="500" y1="344" x2="500" y2="380" stroke="#a8a69d" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="500" y1="428" x2="500" y2="452" stroke="#a8a69d" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="500" y1="588" x2="500" y2="624" stroke="#ff6a30" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+  <!-- No -> loop back to capture (curved up the left) -->
+  <path d="M 376 520 C 232 520, 232 144, 376 144" fill="none" stroke="#a8a69d" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+
+  <!-- Arrow labels -->
+  <rect x="484" y="602" width="32" height="12" rx="2" fill="#1c1a17"/>
+  <text x="500" y="611" fill="#ff6a30" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.10em">YES</text>
+
+  <rect x="196" y="324" width="72" height="12" rx="2" fill="#1c1a17"/>
+  <text x="232" y="333" fill="#a8a69d" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">NO · LOOP</text>
+
+  <!-- Start oval: capture -->
+  <rect x="380" y="120" width="240" height="48" rx="24" fill="rgba(241,239,231,0.03)" stroke="rgba(241,239,231,0.30)" stroke-width="1"/>
+  <text x="500" y="148" fill="#f1efe7" font-size="12" font-weight="600" text-anchor="middle">Capture frame (JPEG)</text>
+
+  <!-- Step: decode -->
+  <rect x="380" y="204" width="240" height="48" rx="6" fill="#2a2723" stroke="#f1efe7" stroke-width="1"/>
+  <text x="500" y="226" fill="#f1efe7" font-size="12" font-weight="600" text-anchor="middle">Decode → grayscale</text>
+  <text x="500" y="242" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">jpg2rgb565 · ¼ scale</text>
+
+  <!-- Step: per-slot features -->
+  <rect x="356" y="288" width="288" height="56" rx="6" fill="#2a2723" stroke="#f1efe7" stroke-width="1"/>
+  <text x="500" y="312" fill="#f1efe7" font-size="12" font-weight="600" text-anchor="middle">Per slot: edge energy vs threshold</text>
+  <text x="500" y="330" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">hysteresis · debounce · adaptive baseline</text>
+
+  <!-- Step: count -->
+  <rect x="380" y="380" width="240" height="48" rx="6" fill="#2a2723" stroke="#f1efe7" stroke-width="1"/>
+  <text x="500" y="402" fill="#f1efe7" font-size="12" font-weight="600" text-anchor="middle">count = occupied slots</text>
+  <text x="500" y="418" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">committed, debounced</text>
+
+  <!-- Decision diamond -->
+  <polygon points="500,452 624,520 500,588 376,520" fill="#2a2723" stroke="#f1efe7" stroke-width="1"/>
+  <text x="500" y="512" fill="#f1efe7" font-size="11" font-weight="600" text-anchor="middle">Count changed?</text>
+  <text x="500" y="528" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">per trigger rule</text>
+  <text x="500" y="542" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">+ not rate-limited</text>
+
+  <!-- End oval: POST (focal coral) -->
+  <rect x="380" y="624" width="240" height="56" rx="28" fill="rgba(255,106,48,0.08)" stroke="#ff6a30" stroke-width="1"/>
+  <text x="500" y="650" fill="#f1efe7" font-size="12" font-weight="600" text-anchor="middle">POST image + count → webhook</text>
+  <text x="500" y="666" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">multipart/form-data</text>
+
+  <!-- Legend -->
+  <line x1="40" y1="704" x2="960" y2="704" stroke="rgba(241,239,231,0.10)" stroke-width="0.8"/>
+  <text x="40" y="720" fill="#a8a69d" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.16em">LEGEND · SHAPE CARRIES TYPE</text>
+
+  <rect x="40" y="736" width="24" height="12" rx="6" fill="rgba(241,239,231,0.03)" stroke="rgba(241,239,231,0.30)" stroke-width="1"/>
+  <text x="72" y="746" fill="#a8a69d" font-size="8.5">Start / loop (oval)</text>
+
+  <rect x="220" y="736" width="24" height="12" rx="2" fill="#2a2723" stroke="#f1efe7" stroke-width="1"/>
+  <text x="252" y="746" fill="#a8a69d" font-size="8.5">Step</text>
+
+  <polygon points="360,742 372,736 384,742 372,748" fill="#2a2723" stroke="#f1efe7" stroke-width="1"/>
+  <text x="392" y="746" fill="#a8a69d" font-size="8.5">Decision</text>
+
+  <line x1="500" y1="744" x2="528" y2="744" stroke="#ff6a30" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+  <text x="536" y="746" fill="#a8a69d" font-size="8.5">Send (webhook)</text>
+
+  <line x1="660" y1="744" x2="688" y2="744" stroke="#a8a69d" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+  <text x="696" y="746" fill="#a8a69d" font-size="8.5">Loop to next frame</text>
+</svg>

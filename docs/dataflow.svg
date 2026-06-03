@@ -1,0 +1,113 @@
+<svg viewBox="0 0 1000 500" xmlns="http://www.w3.org/2000/svg" font-family="'Geist', system-ui, sans-serif">
+  <defs>
+    <style><![CDATA[@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap');]]></style>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.9" fill="rgba(241,239,231,0.10)"/>
+    </pattern>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#a8a69d"/></marker>
+    <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#ff6a30"/></marker>
+    <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#5ba8eb"/></marker>
+  </defs>
+
+  <rect width="100%" height="100%" fill="#1c1a17"/>
+  <rect width="100%" height="100%" fill="url(#dots)" opacity="0.55"/>
+
+  <!-- Header -->
+  <text x="40" y="44" fill="#a8a69d" font-size="11" font-family="'Geist Mono', monospace" letter-spacing="0.18em">DATA FLOW · ALL COMPUTER VISION RUNS ON THE DEVICE</text>
+  <text x="40" y="80" fill="#f1efe7" font-size="28" font-family="'Instrument Serif', serif">How ESP-ParkingValet works</text>
+
+  <!-- Trust boundary -->
+  <rect x="24" y="120" width="420" height="268" rx="8" fill="none" stroke="rgba(241,239,231,0.22)" stroke-width="1" stroke-dasharray="6,4"/>
+  <rect x="40" y="114" width="232" height="14" rx="2" fill="#1c1a17"/>
+  <text x="48" y="124" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" letter-spacing="0.14em">ESP32-CAM · ON-DEVICE</text>
+
+  <!-- Arrows (behind nodes) -->
+  <line x1="192" y1="216" x2="256" y2="216" stroke="#a8a69d" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="432" y1="216" x2="560" y2="216" stroke="#ff6a30" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+  <line x1="712" y1="216" x2="784" y2="216" stroke="#a8a69d" stroke-width="1.2" marker-end="url(#arrow)"/>
+  <line x1="192" y1="332" x2="256" y2="332" stroke="#5ba8eb" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow-link)"/>
+  <line x1="344" y1="300" x2="344" y2="256" stroke="#a8a69d" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+  <!-- Arrow labels -->
+  <rect x="206" y="206" width="36" height="12" rx="2" fill="#1c1a17"/>
+  <text x="224" y="215" fill="#a8a69d" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">FRAME</text>
+
+  <rect x="452" y="206" width="88" height="12" rx="2" fill="#1c1a17"/>
+  <text x="496" y="215" fill="#ff6a30" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">MQTT + POST</text>
+
+  <rect x="730" y="206" width="36" height="12" rx="2" fill="#1c1a17"/>
+  <text x="748" y="215" fill="#a8a69d" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">IMAGE</text>
+
+  <rect x="206" y="322" width="40" height="12" rx="2" fill="#1c1a17"/>
+  <text x="226" y="331" fill="#5ba8eb" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CONFIG</text>
+
+  <rect x="318" y="272" width="52" height="12" rx="2" fill="#1c1a17"/>
+  <text x="344" y="281" fill="#a8a69d" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">SETTINGS</text>
+
+  <!-- Node: Camera (input) -->
+  <rect x="40" y="180" width="152" height="72" rx="6" fill="#1c1a17"/>
+  <rect x="40" y="180" width="152" height="72" rx="6" fill="rgba(168,166,157,0.10)" stroke="#8e8c83" stroke-width="1"/>
+  <rect x="48" y="188" width="30" height="12" rx="2" fill="transparent" stroke="rgba(142,140,131,0.40)" stroke-width="0.8"/>
+  <text x="63" y="197" fill="#8e8c83" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CAM</text>
+  <text x="116" y="222" fill="#f1efe7" font-size="12" font-weight="600" text-anchor="middle">OV5640 sensor</text>
+  <text x="116" y="238" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">capture JPEG</text>
+
+  <!-- Node: On-device CV (focal coral) -->
+  <rect x="256" y="180" width="176" height="72" rx="6" fill="#1c1a17"/>
+  <rect x="256" y="180" width="176" height="72" rx="6" fill="rgba(255,106,48,0.08)" stroke="#ff6a30" stroke-width="1"/>
+  <rect x="264" y="188" width="26" height="12" rx="2" fill="transparent" stroke="rgba(255,106,48,0.50)" stroke-width="0.8"/>
+  <text x="277" y="197" fill="#ff6a30" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CV</text>
+  <text x="344" y="222" fill="#f1efe7" font-size="12" font-weight="600" text-anchor="middle">On-device CV</text>
+  <text x="344" y="238" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">edge energy · counts cars</text>
+
+  <!-- Node: Web UI (store) -->
+  <rect x="256" y="300" width="176" height="64" rx="6" fill="#1c1a17"/>
+  <rect x="256" y="300" width="176" height="64" rx="6" fill="rgba(241,239,231,0.05)" stroke="#a8a69d" stroke-width="1"/>
+  <rect x="264" y="308" width="26" height="12" rx="2" fill="transparent" stroke="rgba(168,166,157,0.50)" stroke-width="0.8"/>
+  <text x="277" y="317" fill="#a8a69d" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">UI</text>
+  <text x="344" y="338" fill="#f1efe7" font-size="12" font-weight="600" text-anchor="middle">Web UI</text>
+  <text x="344" y="354" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">config · calibrate · OTA</text>
+
+  <!-- Node: Admin browser (input) -->
+  <rect x="40" y="304" width="152" height="56" rx="6" fill="#1c1a17"/>
+  <rect x="40" y="304" width="152" height="56" rx="6" fill="rgba(168,166,157,0.10)" stroke="#8e8c83" stroke-width="1"/>
+  <rect x="48" y="312" width="30" height="12" rx="2" fill="transparent" stroke="rgba(142,140,131,0.40)" stroke-width="0.8"/>
+  <text x="63" y="321" fill="#8e8c83" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">EXT</text>
+  <text x="116" y="340" fill="#f1efe7" font-size="12" font-weight="600" text-anchor="middle">Your phone</text>
+  <text x="116" y="354" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">browser</text>
+
+  <!-- Node: egress — MQTT + webhook (cloud) -->
+  <rect x="560" y="180" width="152" height="72" rx="6" fill="#1c1a17"/>
+  <rect x="560" y="180" width="152" height="72" rx="6" fill="rgba(241,239,231,0.03)" stroke="rgba(241,239,231,0.30)" stroke-width="1"/>
+  <rect x="568" y="188" width="34" height="12" rx="2" fill="transparent" stroke="rgba(241,239,231,0.22)" stroke-width="0.8"/>
+  <text x="585" y="197" fill="#8e8c83" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">OUT</text>
+  <text x="636" y="222" fill="#f1efe7" font-size="12" font-weight="600" text-anchor="middle">MQTT + Webhook</text>
+  <text x="636" y="238" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">per-field · image</text>
+
+  <!-- Node: Save / notify (store) -->
+  <rect x="784" y="180" width="176" height="72" rx="6" fill="#1c1a17"/>
+  <rect x="784" y="180" width="176" height="72" rx="6" fill="rgba(241,239,231,0.05)" stroke="#a8a69d" stroke-width="1"/>
+  <rect x="792" y="188" width="34" height="12" rx="2" fill="transparent" stroke="rgba(168,166,157,0.50)" stroke-width="0.8"/>
+  <text x="809" y="197" fill="#a8a69d" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">HA</text>
+  <text x="872" y="222" fill="#f1efe7" font-size="12" font-weight="600" text-anchor="middle">Home Assistant</text>
+  <text x="872" y="238" fill="#a8a69d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">+ any webhook sink</text>
+
+  <!-- Legend -->
+  <line x1="40" y1="430" x2="960" y2="430" stroke="rgba(241,239,231,0.10)" stroke-width="0.8"/>
+  <text x="40" y="446" fill="#a8a69d" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.18em">LEGEND</text>
+
+  <rect x="40" y="462" width="14" height="10" rx="2" fill="rgba(255,106,48,0.08)" stroke="#ff6a30" stroke-width="1"/>
+  <text x="60" y="470" fill="#a8a69d" font-size="8.5">On-device CV (focal)</text>
+
+  <rect x="216" y="462" width="14" height="10" rx="2" fill="rgba(168,166,157,0.10)" stroke="#8e8c83" stroke-width="1"/>
+  <text x="236" y="470" fill="#a8a69d" font-size="8.5">Edge / input</text>
+
+  <rect x="344" y="462" width="14" height="10" rx="2" fill="rgba(241,239,231,0.05)" stroke="#a8a69d" stroke-width="1"/>
+  <text x="364" y="470" fill="#a8a69d" font-size="8.5">On-device store / UI</text>
+
+  <rect x="520" y="462" width="14" height="10" rx="2" fill="rgba(241,239,231,0.03)" stroke="rgba(241,239,231,0.30)" stroke-width="1"/>
+  <text x="540" y="470" fill="#a8a69d" font-size="8.5">External / cloud</text>
+
+  <line x1="672" y1="468" x2="700" y2="468" stroke="#ff6a30" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+  <text x="708" y="470" fill="#a8a69d" font-size="8.5">Telemetry + image out</text>
+</svg>
