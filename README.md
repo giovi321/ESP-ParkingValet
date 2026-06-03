@@ -112,6 +112,22 @@ If the LED reads inverted on your board, flip `LED_ACTIVE_LOW` in
 [`src/camera_pins.h`](src/camera_pins.h). There's also a `-DPARKINGCAM_BUTTON_DISCOVERY` build
 flag that logs GPIO transitions if you ever need to find another button.
 
+### 3D-printed case
+
+A printable enclosure for the board is in
+[`hardware/ESPCam_OV5640_case_v5.stl`](hardware/ESPCam_OV5640_case_v5.stl) (modeled in SketchUp).
+The geometry is nothing unusual, so slice it with whatever settings your printer already likes.
+
+To put it together you'll need:
+
+- One **1/4" threaded insert**, set about 6 mm into its hole. That's the standard 1/4"-20 camera
+  thread, so the finished case screws onto a tripod or any camera mount.
+- Four **2 mm × 9 mm self-tapping screws**.
+- Four **2 mm × 5 mm self-tapping screws**.
+
+Press or heat-set the insert until it bottoms out in the 6 mm hole, then run the self-tappers
+straight into the printed bosses. Ease off on the last turn so you don't strip the plastic.
+
 ---
 
 ## Build and flash (PlatformIO)
@@ -330,6 +346,7 @@ encryption if at-rest protection matters. The config API never returns secrets.
 ```
 platformio.ini            build config, pre-build hooks (UI gzip + git-SHA stamp), libs (AF, MQTT)
 docs/*.svg                diagrams (data flow, CV pipeline, operating modes)
+hardware/*.stl            3D-printable enclosure
 web-src/index.html        the web UI (edit here)
 tools/gen_web_ui.py       gzip the UI into src/web_ui.h
 tools/pio_prebuild.py     pre-build hook: regenerates web_ui.h and build_info.h
