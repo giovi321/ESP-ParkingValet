@@ -37,6 +37,11 @@ void configLoadDefaults(Config& c) {
   setStr(c.whAuthHeaderValue, sizeof(c.whAuthHeaderValue), "");
   c.whTlsInsecure = true;
 
+  c.spoolMode       = SPOOL_COUNT;          // count-only: durable, deep queue
+  c.spoolMaxEntries = 20;
+  c.spoolMaxKB      = 96;
+  c.spoolBackend    = SPOOL_BACKEND_AUTO;
+
   c.statsEnabled = false;
   setStr(c.statsUrl, sizeof(c.statsUrl), "");
   setStr(c.statsAuthHeaderName,  sizeof(c.statsAuthHeaderName),  "");
@@ -102,6 +107,11 @@ static void serializeFull(const Config& c, JsonObject o) {
   o["whAuthHeaderName"]   = c.whAuthHeaderName;
   o["whAuthHeaderValue"]  = c.whAuthHeaderValue;
   o["whTlsInsecure"]      = c.whTlsInsecure;
+
+  o["spoolMode"]       = c.spoolMode;
+  o["spoolMaxEntries"] = c.spoolMaxEntries;
+  o["spoolMaxKB"]      = c.spoolMaxKB;
+  o["spoolBackend"]    = c.spoolBackend;
 
   o["statsEnabled"]         = c.statsEnabled;
   o["statsUrl"]             = c.statsUrl;
@@ -207,6 +217,11 @@ static void parseFull(Config& c, JsonObjectConst o) {
   if (o["whAuthHeaderName"].is<const char*>())  setStr(c.whAuthHeaderName,  sizeof(c.whAuthHeaderName),  o["whAuthHeaderName"]);
   if (o["whAuthHeaderValue"].is<const char*>()) setStr(c.whAuthHeaderValue, sizeof(c.whAuthHeaderValue), o["whAuthHeaderValue"]);
   c.whTlsInsecure = o["whTlsInsecure"] | c.whTlsInsecure;
+
+  c.spoolMode       = o["spoolMode"]       | c.spoolMode;
+  c.spoolMaxEntries = o["spoolMaxEntries"] | c.spoolMaxEntries;
+  c.spoolMaxKB      = o["spoolMaxKB"]      | c.spoolMaxKB;
+  c.spoolBackend    = o["spoolBackend"]    | c.spoolBackend;
 
   c.statsEnabled = o["statsEnabled"] | c.statsEnabled;
   if (o["statsUrl"].is<const char*>())             setStr(c.statsUrl,             sizeof(c.statsUrl),             o["statsUrl"]);

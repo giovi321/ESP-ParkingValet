@@ -33,6 +33,18 @@ enum TriggerMode : uint8_t {
   TRIG_THRESHOLD  = 1,   // send only when the count crosses >= threshold (rising or falling edge)
 };
 
+// Offline spool (store & forward): what to persist for each count change.
+enum SpoolMode : uint8_t {
+  SPOOL_OFF   = 0,   // disabled: count changes are sent live, best-effort (legacy)
+  SPOOL_COUNT = 1,   // queue the count-change record only (no image) — deep, durable
+  SPOOL_PHOTO = 2,   // queue the photo + record (few fit; see spool.cpp)
+};
+// Where the spool lives.
+enum SpoolBackend : uint8_t {
+  SPOOL_BACKEND_AUTO  = 0,   // SD if available, else internal flash
+  SPOOL_BACKEND_FLASH = 1,   // internal flash only
+};
+
 struct Roi {
   char  name[16];
   int   nPoints;            // 3..MAX_POLY
@@ -64,6 +76,12 @@ struct Config {
   char whAuthHeaderName[48]; // e.g. "Authorization" or "X-API-Key" ("" = none)
   char whAuthHeaderValue[200];
   bool whTlsInsecure;        // skip cert validation for https (self-signed internal CA)
+
+  // --- Offline spool (store & forward for count-change webhooks) ---
+  uint8_t  spoolMode;        // SpoolMode: 0=off, 1=count-only, 2=photo+count
+  uint16_t spoolMaxEntries;  // queue depth cap (drop oldest beyond this)
+  uint16_t spoolMaxKB;       // queue size cap in KB (drop oldest beyond this)
+  uint8_t  spoolBackend;     // SpoolBackend: 0=auto(SD->flash), 1=flash
 
   // --- Stats webhook (periodic JSON telemetry: ip, rssi, heap, count, ...) ---
   bool     statsEnabled;

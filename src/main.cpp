@@ -13,6 +13,7 @@
 #include "esp_system.h"
 #include "clk.h"
 #include "mqttc.h"
+#include "spool.h"
 #include "logbuf.h"
 
 #if defined(__has_include)
@@ -85,7 +86,17 @@ static void maybeSend(camera_fb_t* fb, const CvResult& r) {
   if (!shouldSend(lastSentCount, r.count)) return;
   if (now - lastSendMs < cfg.minSendIntervalMs) return;   // rate-limited; retry next cycle
 
-  postEvent("count_changed", fb, r, r.count, lastSentCount);
+  // Durably queue the change (delivered now if online, else on reconnect/after a
+  // reboot) so it survives an outage. With the spool off, fall back to the
+  // legacy live best-effort send.
+  if (cfg.spoolMode != SPOOL_OFF) {
+    bool slots[MAX_ROIS];
+    for (int i = 0; i < r.n && i < MAX_ROIS; i++) slots[i] = r.slots[i].occupied;
+    spoolEnqueue("count_changed", fb->buf, fb->len, r.count, lastSentCount, slots, r.n);
+    lastSendMs = now;
+  } else {
+    postEvent("count_changed", fb, r, r.count, lastSentCount);
+  }
   lastSentCount = r.count;
 }
 
@@ -180,6 +191,7 @@ void setup() {
   clockBegin();   // start NTP (syncs once online)
   webBegin(&cfg, &lastResult);
   mqttBegin(&cfg, &lastResult);
+  spoolBegin(&cfg);   // mount the offline queue + recover any pending events
   log_i("ready. mode=%s ip=%s", netIsAP() ? "AP" : "STA", netGetStatus().ip.c_str());
 }
 
@@ -190,6 +202,7 @@ void loop() {
   ledUpdate();
   maybeSendStats();
   mqttLoop();
+  spoolDrain();   // deliver any queued count changes once the link is back
 
   uint32_t now = millis();
   if (now - lastCaptureMs >= cfg.captureIntervalMs) {

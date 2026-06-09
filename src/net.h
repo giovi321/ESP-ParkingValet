@@ -33,13 +33,23 @@ NetMode  netMode();
 bool     netIsAP();
 NetStatus netGetStatus();
 
-// Build and POST the webhook event (multipart/form-data with the JPEG + fields).
-// `event` is e.g. "count_changed" or "heartbeat". `slots` is per-ROI occupancy.
+// Build and POST the webhook event (multipart/form-data with the fields and,
+// when jpg/jpgLen are given, the JPEG image part — pass jpg=nullptr/jpgLen=0 to
+// omit it for a count-only event). `event` is e.g. "count_changed"/"heartbeat";
+// `slots` is per-ROI occupancy.
+//
+// For replayed (spooled) events, pass the original capture time via origTs
+// (UTC epoch) / origIso (ISO8601) and queued=true so the receiver can tell a
+// backfill from a live event; queuedAgeS is how long it sat in the queue. Live
+// sends use the defaults (current time, queued=false).
+//
 // Returns the HTTP status code (>0 ok), or a negative error.
 int netSendEvent(const Config& cfg, const char* event,
                  const uint8_t* jpg, size_t jpgLen,
                  int count, int prevCount,
-                 const bool* slots, int nSlots);
+                 const bool* slots, int nSlots,
+                 uint32_t origTs = 0, const char* origIso = nullptr,
+                 bool queued = false, uint32_t queuedAgeS = 0);
 
 // POST a JSON body to an arbitrary URL with an optional auth header (used by the
 // stats/telemetry webhook). Returns the HTTP status code (>0 ok), or negative.

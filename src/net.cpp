@@ -116,40 +116,56 @@ static void appendField(String& head, const char* name, const String& value) {
 int netSendEvent(const Config& cfg, const char* event,
                  const uint8_t* jpg, size_t jpgLen,
                  int count, int prevCount,
-                 const bool* slots, int nSlots) {
+                 const bool* slots, int nSlots,
+                 uint32_t origTs, const char* origIso,
+                 bool queued, uint32_t queuedAgeS) {
   if (!cfg.whUrl[0]) return -1000;   // no URL set. The enable toggle is enforced by the
                                      // caller (maybeSend), so "Send test" works even when disabled.
   if (WiFi.status() != WL_CONNECTED)   return -1001;
 
+  const bool hasImage = (jpg != nullptr && jpgLen > 0);
   uint32_t uptimeS = millis() / 1000;
   String filename = String(cfg.hostname) + "_" + count + "_" + uptimeS + ".jpg";
 
+  // Replayed events carry their original capture time; live events stamp "now".
+  String ts   = String(origTs ? origTs : (uint32_t)clockEpoch());     // UTC epoch (0 if unsynced)
+  String iso  = (origIso && origIso[0]) ? String(origIso) : clockIso();// ISO8601 UTC
+
   String head;
-  head.reserve(640);
+  head.reserve(700);
   appendField(head, "device",     cfg.hostname);
   appendField(head, "event",      event);
   appendField(head, "count",      String(count));
   appendField(head, "prev_count", String(prevCount));
   appendField(head, "slots",      buildSlotsJson(slots, nSlots));
-  appendField(head, "ts",         String((uint32_t)clockEpoch()));   // UTC epoch (0 if unsynced)
-  appendField(head, "time",       clockIso());                       // ISO8601 UTC
+  appendField(head, "ts",         ts);
+  appendField(head, "time",       iso);
+  appendField(head, "queued",     queued ? "true" : "false");         // backfill vs live
+  if (queued) appendField(head, "queued_age_s", String(queuedAgeS));
   // Image webhook intentionally carries no diagnostics — just photo + occupancy + time.
-  head += "--"; head += MP_BOUNDARY; head += "\r\n";
-  head += "Content-Disposition: form-data; name=\"image\"; filename=\"" + filename + "\"\r\n";
-  head += "Content-Type: image/jpeg\r\n\r\n";
+  if (hasImage) {
+    head += "--"; head += MP_BOUNDARY; head += "\r\n";
+    head += "Content-Disposition: form-data; name=\"image\"; filename=\"" + filename + "\"\r\n";
+    head += "Content-Type: image/jpeg\r\n\r\n";
+  }
 
   String tail = "\r\n--";
   tail += MP_BOUNDARY; tail += "--\r\n";
 
-  size_t total = head.length() + jpgLen + tail.length();
+  // For a count-only event there is no image part; the leading CRLF of `tail`
+  // would be stray, so drop it when nothing precedes it.
+  const char* tailStr = hasImage ? tail.c_str() : (tail.c_str() + 2);
+  size_t tailLen      = hasImage ? tail.length() : (tail.length() - 2);
+
+  size_t total = head.length() + (hasImage ? jpgLen : 0) + tailLen;
   uint8_t* body = (uint8_t*)heap_caps_malloc(total, MALLOC_CAP_SPIRAM);
   if (!body) body = (uint8_t*)malloc(total);
   if (!body) return -1002;
 
   size_t off = 0;
   memcpy(body + off, head.c_str(), head.length()); off += head.length();
-  memcpy(body + off, jpg, jpgLen);                 off += jpgLen;
-  memcpy(body + off, tail.c_str(), tail.length()); off += tail.length();
+  if (hasImage) { memcpy(body + off, jpg, jpgLen); off += jpgLen; }
+  memcpy(body + off, tailStr, tailLen);            off += tailLen;
 
   bool https = strncmp(cfg.whUrl, "https:", 6) == 0;
   HTTPClient http;

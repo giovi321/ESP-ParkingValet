@@ -8,6 +8,7 @@
 #include "camera.h"
 #include "buttons.h"
 #include "mqttc.h"
+#include "spool.h"
 #include "web_ui.h"      // index_html_gz / index_html_gz_len (generated)
 #include "logbuf.h"
 
@@ -89,6 +90,10 @@ static void handleState() {
   doc["afStatus"]       = cameraFocusStatus();
   doc["mqttEnabled"]    = g_cfg->mqttEnabled;
   doc["mqttConnected"]  = mqttConnected();
+  uint32_t spQ = 0, spB = 0; spoolStats(spQ, spB);
+  doc["spoolMode"]      = g_cfg->spoolMode;
+  doc["spoolQueued"]    = spQ;
+  doc["spoolBytes"]     = spB;
 
   JsonObject cv = doc["cv"].to<JsonObject>();
   cv["valid"]  = g_last->valid;
@@ -260,6 +265,9 @@ static void handleAction() {
   } else if (!strcmp(action, "test_mqtt")) {
     mqttPublishNow();
     server.send(200, "application/json", mqttConnected() ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"not connected\"}");
+  } else if (!strcmp(action, "clear_spool")) {
+    spoolClear();
+    server.send(200, "application/json", "{\"ok\":true}");
   } else {
     server.send(400, "application/json", "{\"ok\":false,\"err\":\"unknown action\"}");
   }

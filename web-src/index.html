@@ -194,6 +194,30 @@
       <div class="hint" id="lastSend"></div>
     </div>
     <div class="card">
+      <h2>Offline spool <small>store &amp; forward</small></h2>
+      <label>Queue count changes when offline</label>
+      <select id="c_spoolMode">
+        <option value="0">Off (send live only)</option>
+        <option value="1">Count only</option>
+        <option value="2">Photo + count</option>
+      </select>
+      <div class="row">
+        <div><label>Max entries</label><input type="number" id="c_spoolMaxEntries" min="1" max="200" step="1"></div>
+        <div><label>Max size (KB)</label><input type="number" id="c_spoolMaxKB" min="4" max="512" step="4"></div>
+      </div>
+      <label>Storage</label>
+      <select id="c_spoolBackend">
+        <option value="0">Auto (SD if available, else flash)</option>
+        <option value="1">Internal flash only</option>
+      </select>
+      <div class="btns">
+        <button class="btn" id="saveSpool">Save</button>
+        <button class="ghost" id="clearSpool">Clear queue</button>
+      </div>
+      <div class="hint" id="spoolStat">—</div>
+      <div class="hint">Each count change is saved here and delivered when the link returns — surviving reboots. The oldest entry is dropped once a cap is hit. <b>This board has no usable SD slot</b> (the camera uses those pins), so storage is internal flash (~128&nbsp;KB): room for roughly <b>20 count records</b> or <b>1–2 photos</b>. Count-only is recommended; heartbeats are not queued.</div>
+    </div>
+    <div class="card">
       <h2>Stats webhook <small>periodic telemetry (JSON)</small></h2>
       <div class="chk"><input type="checkbox" id="c_statsEnabled"><label for="c_statsEnabled" style="margin:0;color:var(--txt)">Enabled</label></div>
       <label>Stats URL</label><input type="url" id="c_statsUrl" placeholder="https://hooks.example.com/webhook/parking-stats">
@@ -375,6 +399,7 @@ $("#tabs").addEventListener("click", e=>{
 const F = ["edgeThreshold","hysteresis","baselineEma","stableFrames","captureIntervalMs",
   "triggerMode","triggerThreshold","minSendIntervalMs","heartbeatIntervalS",
   "whEnabled","whUrl","whAuthHeaderName","whAuthHeaderValue","whTlsInsecure",
+  "spoolMode","spoolMaxEntries","spoolMaxKB","spoolBackend",
   "statsEnabled","statsUrl","statsIntervalS","statsAuthHeaderName","statsAuthHeaderValue","statsTlsInsecure",
   "mqttEnabled","mqttHost","mqttPort","mqttTls","mqttTlsInsecure","mqttUser","mqttPass","mqttBaseTopic","mqttDiscovery","mqttDiscoveryPrefix","mqttIntervalS",
   "staSsid","staPass","hostname","offlineRebootMin","apSsid","apPass",
@@ -391,6 +416,8 @@ function fill(){
   $("#c_triggerMode").value=String(cfg.triggerMode);
   $("#c_framesize").value=String(cfg.framesize);
   $("#c_afMode").value=String(cfg.afMode);
+  $("#c_spoolMode").value=String(cfg.spoolMode);
+  $("#c_spoolBackend").value=String(cfg.spoolBackend);
 }
 function collect(keys){
   const o={};
@@ -420,6 +447,8 @@ async function loadCfg(){ cfg=await api("/api/config"); fill();
 
 $("#saveDetect").onclick=()=>save(["edgeThreshold","hysteresis","baselineEma","stableFrames","captureIntervalMs","triggerMode","triggerThreshold","minSendIntervalMs","heartbeatIntervalS"]);
 $("#saveWebhook").onclick=()=>save(["whEnabled","whUrl","whAuthHeaderName","whAuthHeaderValue","whTlsInsecure"]);
+$("#saveSpool").onclick=()=>save(["spoolMode","spoolMaxEntries","spoolMaxKB","spoolBackend"]);
+$("#clearSpool").onclick=async()=>{ if(!confirm("Clear all queued events?")) return; try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"clear_spool"})}); toast("Queue cleared");}catch(e){toast("Clear failed",true);} };
 $("#saveStats").onclick=()=>save(["statsEnabled","statsUrl","statsIntervalS","statsAuthHeaderName","statsAuthHeaderValue","statsTlsInsecure"]);
 $("#testStats").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_stats"})}); toast(r.ok?("Stats sent · HTTP "+r.code):("Stats failed · "+r.code),!r.ok);}catch(e){toast("Stats failed",true);} };
 $("#saveMqtt").onclick=()=>save(["mqttEnabled","mqttHost","mqttPort","mqttTls","mqttTlsInsecure","mqttUser","mqttPass","mqttBaseTopic","mqttDiscovery","mqttDiscoveryPrefix","mqttIntervalS"]);
@@ -579,6 +608,7 @@ async function poll(){
     if(st.afStatus!=null){ const a=st.afStatus; $("#sAf").textContent=a<0?"n/a":(a===16?"focused":(a===112?"idle":"busy (0x"+a.toString(16)+")")); }
     if(st.mqttEnabled!==undefined){ const t=st.mqttEnabled?(st.mqttConnected?"connected":"connecting…"):"off"; $("#sMqtt").textContent=t; const ms=$("#mqttStat"); if(ms)ms.textContent=t; }
     if(st.lastSend && st.lastSend.code) $("#lastSend").textContent=`Last send: ${st.lastSend.event} · count ${st.lastSend.count} · HTTP ${st.lastSend.code} · ${st.lastSend.agoS}s ago`;
+    if(st.spoolQueued!=null){ const sp=$("#spoolStat"); if(sp) sp.textContent = st.spoolMode===0 ? "Spool off" : `Queued: ${st.spoolQueued} · ${(st.spoolBytes/1024).toFixed(1)} KB`; }
     $("#pwBanner").classList.toggle("show", !!st.mustChangePass);
   }catch(e){ $("#modePill").textContent="offline"; }
 }
