@@ -27,6 +27,8 @@ five seconds forces that hotspot back whenever you need it.
   model and nothing to train.
 - POSTs the JPEG to a webhook when the count changes (or when it crosses a threshold you set).
   Optional auth header, http or https.
+- Keeps count changes if the network is down and sends them once it's back, surviving a reboot.
+  The queue lives on flash and is bounded; you pick count-only or photo+count.
 - Sends a second telemetry webhook on a timer (IP, RSSI, heap, count, version, and so on).
 - Publishes to MQTT with Home Assistant auto-discovery: one HA device, each value on its own
   topic, the firmware version and a GitHub link in the device info, and an availability (LWT)
@@ -206,6 +208,10 @@ Everything here is editable in the UI and saved to NVS. Defaults come from
 | | `whUrl` | — | Full URL (http or https). |
 | | `whAuthHeaderName` / `whAuthHeaderValue` | — | e.g. `X-API-Key` or `Authorization: Bearer …`. |
 | | `whTlsInsecure` | `true` | Skip cert check for self-signed https. |
+| Offline spool | `spoolMode` | `1` (count only) | Queue count changes when offline: 0 off, 1 count-only, 2 photo+count. |
+| | `spoolMaxEntries` | `20` | Drop the oldest once the queue passes this many. |
+| | `spoolMaxKB` | `96` | Drop the oldest once it passes this size. Also capped by free flash. |
+| | `spoolBackend` | `0` (auto) | 0 auto (SD if present, else flash), 1 flash. SD is unusable on this board, so it's always flash. |
 | Stats webhook | `statsEnabled` | `false` | Periodic telemetry on/off. |
 | | `statsUrl` | — | Full URL (separate from the image webhook). |
 | | `statsIntervalS` | `300` | Seconds between telemetry POSTs. |
@@ -251,11 +257,14 @@ Everything here is editable in the UI and saved to NVS. Defaults come from
 | `count` / `prev_count` | field | New and previous occupied count. |
 | `slots` | field | JSON array of per-bay booleans, e.g. `[true,false,true]`. |
 | `ts` / `time` | field | UTC timestamp: epoch seconds and ISO8601. Both empty until NTP syncs. |
+| `queued` / `queued_age_s` | field | `queued` is `true` on a replayed event and `false` on a live one; `queued_age_s` is how long it waited. |
 
 The image webhook deliberately carries no diagnostics, just the photo, the occupancy, and the
 timestamp. Diagnostics go to MQTT and the stats webhook. Your auth header, if set, goes on every
 request, and the clock is NTP-synced in UTC. Any HTTP endpoint can take it; the JPEG arrives as a
-multipart file field named `image`.
+multipart file field named `image`. If the offline queue is on, changes that happened during an
+outage get replayed here once the link is back (see [When the link drops](#when-the-link-drops)),
+and a count-only replay arrives with no `image` part, so the receiver has to handle a missing photo.
 
 ### Stats webhook
 
@@ -263,6 +272,40 @@ A separate `application/json` POST every `statsIntervalS` to `statsUrl`. Fields:
 `version`, `build`, `mode`, `ip`, `rssi`, `ssid`, `mac`, `uptime_s`, `heap_free`, `psram_free`,
 `reset_reason`, `roi_count`, `count`, `cv_ms`, `analysis`, `webhook_enabled`, `ts` (UTC epoch),
 `time` (ISO8601). The **Send stats now** button posts it on demand.
+
+---
+
+## When the link drops
+
+A count used to vanish if the network was down at the wrong moment. The board POSTed once, and if
+nothing answered, the change was gone. Worse, it moved on as though it had sent, so it never tried
+again.
+
+Now there's a queue. Every count change is written to flash first, then delivered when the link
+comes back. It survives a WiFi blip and a full reboot, including the offline-reboot watchdog firing
+in the middle of an outage. When the queue fills up, the oldest entry drops off.
+
+You choose what gets saved in the **Offline spool** card:
+
+- **Count only** (the default): just the record (count, previous count, the per-bay booleans, and
+  when it happened). Tiny, so the queue runs deep.
+- **Photo + count:** the JPEG as well. Much heavier; see the capacity note below.
+- **Off:** the old behavior, send once and move on.
+
+A replayed event keeps its original timestamp and adds two fields, `queued` (true) and
+`queued_age_s`, so the receiver can tell a backfill apart from something that just happened. A
+count-only replay has no `image` part, so whatever consumes the webhook needs to cope with a
+missing photo.
+
+About capacity: this board can't use an SD card. The camera already sits on the pins SD would need
+(GPIO 2, 12, 14, and 15 are the SD_MMC bus), so the queue lives on the internal flash `spiffs`
+partition instead. That's about 128 KB, and LittleFS hands it out in 4 KB blocks, so in practice
+you get room for roughly 20 count records, or one or two photos. The backend setting still offers
+"auto (SD if present, else flash)" for some future board with spare pins; here it always resolves
+to flash, and the UI tells you so. Count-only is the sensible default. Heartbeats aren't queued, so
+a long outage won't bury the real changes under them.
+
+Queue depth and size show live in the card, and **Clear queue** empties it.
 
 ---
 
@@ -310,7 +353,7 @@ In STA mode every route needs Digest auth. In AP/setup mode they're open.
 | `GET` | `/api/log` | The on-device log ring buffer (this is what the web serial console reads). |
 | `GET` | `/api/backup` | Download the full config as JSON (includes secrets). |
 | `POST` | `/api/restore` | Restore a backup, then reboot. |
-| `POST` | `/api/action` | `{"action":"reboot\|factory_reset\|ap_mode\|test_webhook\|test_stats\|test_mqtt\|af_focus"}`. |
+| `POST` | `/api/action` | `{"action":"reboot\|factory_reset\|ap_mode\|test_webhook\|test_stats\|test_mqtt\|af_focus\|clear_spool"}`. |
 | `POST` | `/update` | OTA firmware upload (`.bin`). |
 
 ---
@@ -358,6 +401,7 @@ src/
   cv.{h,cpp}              on-device polygon occupancy CV
   clk.{h,cpp}             NTP / UTC clock
   net.{h,cpp}             WiFi STA/AP state machine, webhook POST (multipart and JSON)
+  spool.{h,cpp}           offline store-and-forward queue (LittleFS) for count changes
   mqttc.{h,cpp}           native MQTT client + Home Assistant auto-discovery
   buttons.{h,cpp}         BOOT long-press to AP mode + discovery helper
   logbuf.{h,cpp}          log capture for the web serial console
