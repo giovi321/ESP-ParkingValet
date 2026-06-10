@@ -26,6 +26,7 @@
 #endif
 
 extern int sendStatsNow();   // defined in main.cpp
+extern void noteLoopAlive();  // hang-watchdog heartbeat (main.cpp)
 
 static WebServer  server(80);
 static Config*    g_cfg  = nullptr;
@@ -283,6 +284,7 @@ static void otaRestoreCamera() {
 
 static void handleOtaUpload() {
   HTTPUpload& up = server.upload();
+  noteLoopAlive();   // loop() is blocked here for the whole upload; keep the hang watchdog fed per chunk
   if (up.status == UPLOAD_FILE_START) {
     s_otaAuthFail = false;
     if (g_cfg->adminUser[0] && !server.authenticate(g_cfg->adminUser, g_cfg->adminPass)) {
@@ -368,6 +370,16 @@ void webBegin(Config* cfg, CvResult* last) {
 }
 
 void webLoop() {
+  // Self-heal an orphaned OTA: if an upload stopped the camera but the
+  // connection died without delivering UPLOAD_FILE_END/ABORTED (silent RST or
+  // WiFi de-auth), neither callback restored it. Recover once we are back here
+  // with no active client and no reboot pending. (The hang watchdog in main.cpp
+  // covers the harsher case where handleClient() never returns at all.)
+  if (s_camStopped && !s_rebootPending && !server.client().connected()) {
+    if (Update.isRunning()) Update.abort();   // clear the half-written image (_size=0)
+    otaRestoreCamera();
+    log_w("camera restored after orphaned OTA upload");
+  }
   server.handleClient();
   if (s_rebootPending && (int32_t)(millis() - s_rebootAt) >= 0) {
     log_w("rebooting (scheduled)");

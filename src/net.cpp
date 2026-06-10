@@ -176,6 +176,7 @@ int netSendEvent(const Config& cfg, const char* event,
     WiFiClientSecure secure;
     if (cfg.whTlsInsecure) secure.setInsecure();
     http.begin(secure, cfg.whUrl);
+    http.setConnectTimeout(8000); http.setTimeout(15000);   // bound blocking well under the 90s hang watchdog
     http.addHeader("Content-Type", ctype);
     if (cfg.whAuthHeaderName[0]) http.addHeader(cfg.whAuthHeaderName, cfg.whAuthHeaderValue);
     code = http.POST(body, total);
@@ -183,6 +184,7 @@ int netSendEvent(const Config& cfg, const char* event,
   } else {
     WiFiClient client;
     http.begin(client, cfg.whUrl);
+    http.setConnectTimeout(8000); http.setTimeout(15000);
     http.addHeader("Content-Type", ctype);
     if (cfg.whAuthHeaderName[0]) http.addHeader(cfg.whAuthHeaderName, cfg.whAuthHeaderValue);
     code = http.POST(body, total);
@@ -206,6 +208,7 @@ int netPostJson(const char* url, const char* authName, const char* authValue,
     WiFiClientSecure secure;
     if (tlsInsecure) secure.setInsecure();
     http.begin(secure, url);
+    http.setConnectTimeout(8000); http.setTimeout(15000);
     http.addHeader("Content-Type", "application/json");
     if (authName && authName[0]) http.addHeader(authName, authValue);
     code = http.POST(body);
@@ -213,6 +216,7 @@ int netPostJson(const char* url, const char* authName, const char* authValue,
   } else {
     WiFiClient client;
     http.begin(client, url);
+    http.setConnectTimeout(8000); http.setTimeout(15000);
     http.addHeader("Content-Type", "application/json");
     if (authName && authName[0]) http.addHeader(authName, authValue);
     code = http.POST(body);

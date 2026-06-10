@@ -36,6 +36,27 @@ static uint32_t lastSendMs      = 0;
 static uint32_t lastHeartbeatMs = 0;
 static int      lastMqttCount   = -2;
 
+// --- hang watchdog --------------------------------------------------------
+// A core-0 task reboots the device if loop() (or a progressing OTA upload)
+// stops "beating". This recovers from a wedged web-server upload read on a
+// silently-dropped link (half-open socket: the Arduino WebServer spins in
+// _uploadReadByte with no timeout), which blocks loop() forever so none of the
+// loop()-based timers (scheduled reboot, offline watchdog) can fire. The core
+// 5s task-WDT only watches the idle task, not loopTask, so this fills the gap.
+static volatile uint32_t s_loopBeat = 0;
+void noteLoopAlive() { s_loopBeat = millis(); }
+static void hangWatchdogTask(void*) {
+  const uint32_t LIMIT_MS = 90000;   // no progress this long -> reboot to recover
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    uint32_t beat = s_loopBeat;
+    if (beat && (millis() - beat) > LIMIT_MS) {
+      ets_printf("\n[hang-wdt] no loop progress for >%us -> restart\n", (unsigned)(LIMIT_MS / 1000));
+      esp_restart();
+    }
+  }
+}
+
 // --- status LED (GPIO25 on this board) ------------------------------------
 static inline void ledWrite(bool on) {
   digitalWrite(PIN_STATUS_LED, (on != (bool)LED_ACTIVE_LOW) ? HIGH : LOW);
@@ -193,10 +214,13 @@ void setup() {
   webBegin(&cfg, &lastResult);
   mqttBegin(&cfg, &lastResult);
   spoolBegin(&cfg);   // mount the offline queue + recover any pending events
+  xTaskCreatePinnedToCore(hangWatchdogTask, "hangwdt", 2048, nullptr, 5, nullptr, 0);   // core 0; loopTask is core 1
   log_i("ready. mode=%s ip=%s", netIsAP() ? "AP" : "STA", netGetStatus().ip.c_str());
 }
 
 void loop() {
+  noteLoopAlive();   // feed the hang watchdog
+
   // Confirm a freshly-OTA'd image as good after a short healthy run. This core
   // build has bootloader rollback enabled (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE),
   // so an OTA image boots in "pending verify" and is reverted on the next reboot

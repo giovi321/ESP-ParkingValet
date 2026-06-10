@@ -28,6 +28,13 @@ static bool ensureAfReady() {
 }
 
 bool cameraInit(const Config& cfg) {
+  // A deinit+re-init (e.g. restoring the camera after a failed OTA) issues an
+  // OV5640 system reset that wipes the ~5KB AF firmware from the sensor's MCU
+  // RAM. Clear the cached AF flags so ensureAfReady() re-downloads it; otherwise
+  // autofocus is silently dead until the next reboot.
+  s_afStarted = false;
+  s_afReady   = false;
+
   camera_config_t c = {};
   c.ledc_channel = LEDC_CHANNEL_0;
   c.ledc_timer   = LEDC_TIMER_0;

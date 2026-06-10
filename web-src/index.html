@@ -477,6 +477,9 @@ function stopPolling(){ pollTimers.forEach(clearInterval); pollTimers=[]; }
 
 // ---- OTA ----
 $("#otaBtn").onclick=()=>{ const f=$("#otaFile").files[0]; if(!f){toast("Pick a .bin first",true);return;}
+  const APP_SLOT=1966080;   // ota_0/ota_1 partition size (0x1E0000) — reject obviously-wrong files up front
+  if(f.size>APP_SLOT){ $("#otaStatus").textContent="Too large for the app partition ("+f.size+" > "+APP_SLOT+" bytes)"; toast("Image too large",true); return; }
+  if(f.size<65536||!/\.bin$/i.test(f.name)){ $("#otaStatus").textContent="That doesn't look like a firmware .bin"; toast("Pick a firmware .bin",true); return; }
   stopPolling();   // free the single-connection server: nothing competes with the upload
   const xhr=new XMLHttpRequest(); xhr.open("POST","/update"); xhr.timeout=180000;
   xhr.upload.onprogress=e=>{ if(e.lengthComputable) $("#otaStatus").textContent="Uploading… "+Math.round(e.loaded/e.total*100)+"%"; };
