@@ -39,6 +39,7 @@ static int      s_lastSendCount = 0;
 static int      s_lastSendCode  = 0;
 static uint32_t s_lastSendAt    = 0;
 static bool     s_otaAuthFail   = false;
+static bool     s_camStopped    = false;   // camera deinit'd for an in-progress OTA
 
 // --- helpers ---------------------------------------------------------------
 
@@ -273,6 +274,13 @@ static void handleAction() {
   }
 }
 
+// Bring the camera back after an OTA that did NOT reboot (failed/aborted). The
+// camera is stopped at OTA start because its continuous DMA into PSRAM shares
+// the cache that flash writes disable, which hard-hangs the chip mid-write.
+static void otaRestoreCamera() {
+  if (s_camStopped) { s_camStopped = false; cameraInit(*g_cfg); log_i("camera restored after failed OTA"); }
+}
+
 static void handleOtaUpload() {
   HTTPUpload& up = server.upload();
   if (up.status == UPLOAD_FILE_START) {
@@ -282,6 +290,11 @@ static void handleOtaUpload() {
       return;
     }
     log_i("OTA start: %s", up.filename.c_str());
+    // Stop the camera BEFORE any flash write: its continuous DMA into PSRAM
+    // collides with the cache being disabled during flash erase/write and locks
+    // up the chip (recoverable only by a power cycle). Restored on failure.
+    esp_camera_deinit();
+    s_camStopped = true;
     if (Update.isRunning()) Update.abort();   // clear any stale/aborted attempt
     if (!Update.begin(UPDATE_SIZE_UNKNOWN)) log_e("OTA begin failed: %s", Update.errorString());
   } else if (up.status == UPLOAD_FILE_WRITE) {
@@ -294,6 +307,7 @@ static void handleOtaUpload() {
     else log_e("OTA end failed: %s", Update.errorString());
   } else if (up.status == UPLOAD_FILE_ABORTED) {
     Update.abort();
+    otaRestoreCamera();   // upload interrupted -> bring the camera back
     log_w("OTA aborted (upload interrupted)");
   }
 }
@@ -306,8 +320,9 @@ static void handleOtaDone() {
   }
   if (!Update.hasError()) {
     server.send(200, "application/json", "{\"ok\":true}");
-    scheduleReboot(800);
+    scheduleReboot(800);   // camera stays down; the reboot brings it back
   } else {
+    otaRestoreCamera();    // failed update -> restore the camera we stopped at start
     JsonDocument r; r["ok"] = false; r["err"] = Update.errorString();   // surface the reason to the UI
     String out; serializeJson(r, out);
     server.send(200, "application/json", out);
