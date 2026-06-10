@@ -214,6 +214,7 @@ void loop() {
       esp_ota_mark_app_valid_cancel_rollback();
       log_i("OTA image confirmed valid (rollback cancelled)");
     }
+    spoolArm();   // only now let the spool touch flash — image is committed
   }
 
   buttonsLoop();

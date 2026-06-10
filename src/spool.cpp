@@ -15,6 +15,7 @@
 // ---------------------------------------------------------------------------
 static const Config* s_cfg     = nullptr;
 static bool          s_ready   = false;   // backend mounted
+static bool          s_armed   = false;   // allowed to mount (set after OTA image confirmed)
 static bool          s_mountTried = false; // mount attempted (don't retry on failure)
 static uint32_t      s_head    = 0;        // seq of the oldest queued entry
 static uint32_t      s_nextSeq = 0;        // next seq to assign
@@ -74,6 +75,7 @@ static void deleteHead() {
 // hammering the flash every loop.
 static bool ensureMounted() {
   if (s_ready) return true;
+  if (!s_armed) return false;          // not yet cleared to touch flash (pre-OTA-confirm)
   if (s_mountTried) return false;
   s_mountTried = true;
 
@@ -135,6 +137,8 @@ void spoolBegin(const Config* cfg) {
   // use, so setup() and the web server never wait on a flash format and a
   // freshly-OTA'd build can boot far enough to confirm itself valid.
 }
+
+void spoolArm() { s_armed = true; }
 
 void spoolEnqueue(const char* event, const uint8_t* jpg, size_t jpgLen,
                   int count, int prevCount, const bool* slots, int nSlots) {

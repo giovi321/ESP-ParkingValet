@@ -22,9 +22,16 @@
 // place so a power loss never leaves a half-written entry in the queue.
 // ---------------------------------------------------------------------------
 
-// Mount the backend and recover any queued entries. Call once in setup() after
-// configLoad(). Safe to call when cfg->spoolMode == SPOOL_OFF (mounts nothing).
+// Register the live config. Call once in setup() after configLoad(). Does NOT
+// touch the filesystem — the LittleFS mount is deferred until spoolArm() has
+// been called and the first enqueue/drain happens, so a freshly-OTA'd build
+// boots far enough to confirm itself valid before any flash format runs.
 void spoolBegin(const Config* cfg);
+
+// Allow the spool to mount on next use. Call once from loop() after the OTA
+// image has been confirmed valid (a short healthy run), so the flash format
+// never happens on a not-yet-committed image. Until armed, the spool is dormant.
+void spoolArm();
 
 // Persist a count-change event. In SPOOL_PHOTO mode the JPEG (jpg/jpgLen) is
 // stored too; in SPOOL_COUNT mode the image is ignored. Enforces the caps,
