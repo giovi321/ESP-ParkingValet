@@ -470,11 +470,22 @@ $("#backupBtn").onclick=()=>{ window.location='/api/backup'; };
 $("#restoreBtn").onclick=async()=>{ const f=$("#restoreFile").files[0]; if(!f){toast("Pick a backup .json first",true);return;}
   try{ const txt=await f.text(); const r=await api("/api/restore",{method:"POST",headers:{"Content-Type":"application/json"},body:txt}); toast(r.ok?"Restored, rebooting…":"Restore failed",!r.ok);}catch(e){toast("Restore failed",true);} };
 
+// ---- polling control (pause during OTA so the upload owns the single-connection server) ----
+let pollTimers=[];
+function startPolling(){ stopPolling(); pollTimers=[setInterval(poll,1000),setInterval(refreshSnap,1500),setInterval(pollLog,2500)]; }
+function stopPolling(){ pollTimers.forEach(clearInterval); pollTimers=[]; }
+
 // ---- OTA ----
 $("#otaBtn").onclick=()=>{ const f=$("#otaFile").files[0]; if(!f){toast("Pick a .bin first",true);return;}
-  const fd=new FormData(); fd.append("update",f,f.name); $("#otaStatus").textContent="Uploading…";
-  fetch("/update",{method:"POST",body:fd}).then(r=>r.json()).then(j=>{ $("#otaStatus").textContent=j.ok?"Flashed, rebooting…":"Update failed"; toast(j.ok?"Flashed":"Update failed",!j.ok);})
-   .catch(()=>{$("#otaStatus").textContent="Update failed";toast("Update failed",true);}); };
+  stopPolling();   // free the single-connection server: nothing competes with the upload
+  const xhr=new XMLHttpRequest(); xhr.open("POST","/update"); xhr.timeout=180000;
+  xhr.upload.onprogress=e=>{ if(e.lengthComputable) $("#otaStatus").textContent="Uploading… "+Math.round(e.loaded/e.total*100)+"%"; };
+  xhr.onload=()=>{ let j={}; try{j=JSON.parse(xhr.responseText);}catch(_){}
+    if(xhr.status===200&&j.ok){ $("#otaStatus").textContent="Flashed — rebooting. Wait ~45s, don't power-cycle."; toast("Flashed"); }
+    else { $("#otaStatus").textContent="Update failed"+(j.err?(": "+j.err):(" (HTTP "+xhr.status+")")); toast("Update failed",true); startPolling(); } };
+  xhr.onerror=()=>{ $("#otaStatus").textContent="Update failed (connection lost)"; toast("Update failed",true); startPolling(); };
+  xhr.ontimeout=()=>{ $("#otaStatus").textContent="Update failed (timeout)"; toast("Update failed",true); startPolling(); };
+  const fd=new FormData(); fd.append("update",f,f.name); $("#otaStatus").textContent="Uploading…"; xhr.send(fd); };
 
 // ---- live snapshot ----
 const snap=$("#snap");
@@ -615,7 +626,7 @@ async function poll(){
 
 // ---- boot ----
 (async()=>{ await poll(); await loadCfg(); renderRois();
-  refreshSnap(); pollLog(); setInterval(poll,1000); setInterval(refreshSnap,1500); setInterval(pollLog,2500); })();
+  refreshSnap(); pollLog(); startPolling(); })();
 </script>
 </body>
 </html>

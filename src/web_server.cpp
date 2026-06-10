@@ -282,14 +282,19 @@ static void handleOtaUpload() {
       return;
     }
     log_i("OTA start: %s", up.filename.c_str());
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
+    if (Update.isRunning()) Update.abort();   // clear any stale/aborted attempt
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) log_e("OTA begin failed: %s", Update.errorString());
   } else if (up.status == UPLOAD_FILE_WRITE) {
     if (s_otaAuthFail) return;
-    if (Update.write(up.buf, up.currentSize) != up.currentSize) Update.printError(Serial);
+    if (Update.write(up.buf, up.currentSize) != up.currentSize)
+      log_e("OTA write failed: %s", Update.errorString());
   } else if (up.status == UPLOAD_FILE_END) {
     if (s_otaAuthFail) return;
     if (Update.end(true)) log_i("OTA ok: %u bytes", (unsigned)up.totalSize);
-    else Update.printError(Serial);
+    else log_e("OTA end failed: %s", Update.errorString());
+  } else if (up.status == UPLOAD_FILE_ABORTED) {
+    Update.abort();
+    log_w("OTA aborted (upload interrupted)");
   }
 }
 
@@ -299,9 +304,14 @@ static void handleOtaDone() {
     server.requestAuthentication(DIGEST_AUTH, "ESP-ParkingValet", "Authentication required");
     return;
   }
-  bool ok = !Update.hasError();
-  server.send(200, "application/json", ok ? "{\"ok\":true}" : "{\"ok\":false}");
-  if (ok) scheduleReboot(800);
+  if (!Update.hasError()) {
+    server.send(200, "application/json", "{\"ok\":true}");
+    scheduleReboot(800);
+  } else {
+    JsonDocument r; r["ok"] = false; r["err"] = Update.errorString();   // surface the reason to the UI
+    String out; serializeJson(r, out);
+    server.send(200, "application/json", out);
+  }
 }
 
 static void handleNotFound() {
