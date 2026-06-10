@@ -11,6 +11,7 @@
 #include <ArduinoJson.h>
 #include "esp_heap_caps.h"
 #include "esp_system.h"
+#include "esp_ota_ops.h"
 #include "clk.h"
 #include "mqttc.h"
 #include "spool.h"
@@ -196,6 +197,25 @@ void setup() {
 }
 
 void loop() {
+  // Confirm a freshly-OTA'd image as good after a short healthy run. This core
+  // build has bootloader rollback enabled (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE),
+  // so an OTA image boots in "pending verify" and is reverted on the next reboot
+  // unless the app marks itself valid. Until this fires, rollback is the safety
+  // net: a build that can't run loop() this long is reverted automatically.
+  static uint32_t loopStartMs = 0;
+  static bool     otaConfirmed = false;
+  if (loopStartMs == 0) loopStartMs = millis();
+  if (!otaConfirmed && (millis() - loopStartMs) > 15000) {
+    otaConfirmed = true;
+    const esp_partition_t* run = esp_ota_get_running_partition();
+    esp_ota_img_states_t imgState;
+    if (run && esp_ota_get_state_partition(run, &imgState) == ESP_OK &&
+        imgState == ESP_OTA_IMG_PENDING_VERIFY) {
+      esp_ota_mark_app_valid_cancel_rollback();
+      log_i("OTA image confirmed valid (rollback cancelled)");
+    }
+  }
+
   buttonsLoop();
   netLoop();
   webLoop();

@@ -15,6 +15,7 @@
 // ---------------------------------------------------------------------------
 static const Config* s_cfg     = nullptr;
 static bool          s_ready   = false;   // backend mounted
+static bool          s_mountTried = false; // mount attempted (don't retry on failure)
 static uint32_t      s_head    = 0;        // seq of the oldest queued entry
 static uint32_t      s_nextSeq = 0;        // next seq to assign
 static uint32_t      s_count   = 0;        // queued entries
@@ -65,23 +66,28 @@ static void deleteHead() {
   if (s_count == 0) s_head = s_nextSeq;
 }
 
-void spoolBegin(const Config* cfg) {
-  s_cfg = cfg;
-  s_ready = false;
-  s_head = s_nextSeq = s_count = s_bytes = 0;
+// Mount LittleFS and recover any queued entries. Deferred to the first spool
+// activity (NOT called from setup()): a slow or failed first-boot format then
+// can't stall the web server, and an OTA'd build boots far enough through
+// loop() to be marked valid before any flash format runs. Tries exactly once;
+// on failure the spool stays disabled until the next reboot rather than
+// hammering the flash every loop.
+static bool ensureMounted() {
+  if (s_ready) return true;
+  if (s_mountTried) return false;
+  s_mountTried = true;
 
 #ifdef PARKINGVALET_ENABLE_SD
   // Future hardware with free pins: try the SD backend here when backend==auto.
   // This board's camera owns the SD_MMC pins, so SD is never attempted.
 #endif
-  if (s_cfg->spoolBackend == SPOOL_BACKEND_AUTO) {
+  if (s_cfg && s_cfg->spoolBackend == SPOOL_BACKEND_AUTO)
     log_i("spool: SD unavailable on this board (camera uses SD pins) -> internal flash");
-  }
 
   // Mount LittleFS on the "spiffs" partition (formats on first use).
   if (!LittleFS.begin(/*formatOnFail=*/true, "/littlefs", 10, "spiffs")) {
-    log_e("spool: LittleFS mount failed; offline queue disabled");
-    return;
+    log_e("spool: LittleFS mount failed; offline queue disabled until reboot");
+    return false;
   }
   if (!LittleFS.exists(SDIR)) LittleFS.mkdir(SDIR);
 
@@ -117,11 +123,23 @@ void spoolBegin(const Config* cfg) {
   log_i("spool: ready (backend=flash, %u queued, %u bytes, total=%u/%u)",
         (unsigned)s_count, (unsigned)s_bytes,
         (unsigned)LittleFS.usedBytes(), (unsigned)LittleFS.totalBytes());
+  return true;
+}
+
+void spoolBegin(const Config* cfg) {
+  s_cfg = cfg;
+  s_ready = false;
+  s_mountTried = false;
+  s_head = s_nextSeq = s_count = s_bytes = 0;
+  // The LittleFS mount is intentionally deferred to ensureMounted() on first
+  // use, so setup() and the web server never wait on a flash format and a
+  // freshly-OTA'd build can boot far enough to confirm itself valid.
 }
 
 void spoolEnqueue(const char* event, const uint8_t* jpg, size_t jpgLen,
                   int count, int prevCount, const bool* slots, int nSlots) {
-  if (!s_ready || !s_cfg || s_cfg->spoolMode == SPOOL_OFF) return;
+  if (!s_cfg || s_cfg->spoolMode == SPOOL_OFF) return;
+  if (!ensureMounted()) return;
 
   bool storeImg = (s_cfg->spoolMode == SPOOL_PHOTO) && jpg && jpgLen > 0;
 
@@ -190,9 +208,10 @@ void spoolEnqueue(const char* event, const uint8_t* jpg, size_t jpgLen,
 }
 
 void spoolDrain() {
-  if (!s_ready || !s_cfg || s_cfg->spoolMode == SPOOL_OFF || s_count == 0) return;
+  if (!s_cfg || s_cfg->spoolMode == SPOOL_OFF) return;
   if (netIsAP() || WiFi.status() != WL_CONNECTED) return;
   if (!s_cfg->whEnabled || !s_cfg->whUrl[0]) return;   // nowhere to deliver; keep queued
+  if (!ensureMounted() || s_count == 0) return;
 
   uint32_t now = millis();
   uint32_t iv  = s_cfg->minSendIntervalMs;
@@ -253,7 +272,7 @@ void spoolDrain() {
 void spoolStats(uint32_t& count, uint32_t& bytes) { count = s_count; bytes = s_bytes; }
 
 void spoolClear() {
-  if (!s_ready) return;
+  if (!ensureMounted()) { s_head = s_nextSeq = s_count = s_bytes = 0; return; }
   File dir = LittleFS.open(SDIR);
   if (dir && dir.isDirectory()) {
     for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
