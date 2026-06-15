@@ -68,7 +68,9 @@ void configLoadDefaults(Config& c) {
 
   c.captureIntervalMs = 1500;
   c.stableFrames      = 4;
+  c.occupancyMode     = OCCUPANCY_ABSOLUTE;   // legacy default; relative mode is opt-in
   c.edgeThreshold     = 12.0f;
+  c.relDelta          = 6.0f;
   c.hysteresis        = 0.25f;
   c.baselineEma       = 0.02f;
 
@@ -139,7 +141,9 @@ static void serializeFull(const Config& c, JsonObject o) {
 
   o["captureIntervalMs"] = c.captureIntervalMs;
   o["stableFrames"]      = c.stableFrames;
+  o["occupancyMode"]     = c.occupancyMode;
   o["edgeThreshold"]     = c.edgeThreshold;
+  o["relDelta"]          = c.relDelta;
   o["hysteresis"]        = c.hysteresis;
   o["baselineEma"]       = c.baselineEma;
 
@@ -249,7 +253,9 @@ static void parseFull(Config& c, JsonObjectConst o) {
 
   c.captureIntervalMs = o["captureIntervalMs"] | c.captureIntervalMs;
   c.stableFrames      = o["stableFrames"]      | c.stableFrames;
+  c.occupancyMode     = o["occupancyMode"]     | c.occupancyMode;
   c.edgeThreshold     = o["edgeThreshold"]     | c.edgeThreshold;
+  c.relDelta          = o["relDelta"]          | c.relDelta;
   c.hysteresis        = o["hysteresis"]        | c.hysteresis;
   c.baselineEma       = o["baselineEma"]       | c.baselineEma;
 

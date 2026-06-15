@@ -33,6 +33,12 @@ enum TriggerMode : uint8_t {
   TRIG_THRESHOLD  = 1,   // send only when the count crosses >= threshold (rising or falling edge)
 };
 
+// Occupancy decision: how a bay's edge energy becomes occupied/empty.
+enum OccupancyMode : uint8_t {
+  OCCUPANCY_ABSOLUTE = 0,   // edge vs a fixed threshold (legacy)
+  OCCUPANCY_RELATIVE = 1,   // edge rise above each bay's adaptive empty baseline (lighting-robust)
+};
+
 // Offline spool (store & forward): what to persist for each count change.
 enum SpoolMode : uint8_t {
   SPOOL_OFF   = 0,   // disabled: count changes are sent live, best-effort (legacy)
@@ -113,9 +119,11 @@ struct Config {
   // --- CV parameters ---
   uint16_t captureIntervalMs;
   uint8_t  stableFrames;     // debounce: consecutive cycles a slot state must hold
-  float    edgeThreshold;    // global default edge-energy occupancy threshold
+  uint8_t  occupancyMode;    // OccupancyMode: 0=absolute edge threshold, 1=relative to empty baseline
+  float    edgeThreshold;    // global default edge-energy occupancy threshold (absolute mode)
+  float    relDelta;         // relative mode: edge units above the adaptive empty baseline to call occupied
   float    hysteresis;       // fraction; enter=thr*(1+h), exit=thr*(1-h)
-  float    baselineEma;      // EMA rate for adaptive empty-baseline (0..1, small)
+  float    baselineEma;      // EMA rate for adaptive empty-baseline (0..1, small); the live ref in relative mode
 
   // --- Image / sensor ---
   int  framesize;            // framesize_t value (default SVGA = 9)

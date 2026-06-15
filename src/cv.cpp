@@ -30,7 +30,11 @@ uint32_t CvEngine::roiSignature() const {
       mix((uint32_t)(r.px[j] * 1000));
       mix((uint32_t)(r.py[j] * 1000));
     }
-    mix((uint32_t)r.enabled);
+    // NOTE: `enabled` is deliberately NOT mixed in. It isn't geometry, and a
+    // disabled bay keeps its array slot, so an enable/disable toggle leaves every
+    // slot's index — and its per-slot state — valid. Hashing it here would reset
+    // ALL bays' adaptive baselines on every toggle, which in relative mode makes
+    // occupied bays briefly read empty during tuning.
   }
   return h;
 }
@@ -103,14 +107,19 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
   }
 
   const float globalThr = _cfg->edgeThreshold;
-  const float hys = _cfg->hysteresis;
+  const float hys = constrain(_cfg->hysteresis, 0.0f, 0.9f);  // keep the exit band positive (>=1.0 would latch occupied)
   const uint8_t stableNeed = _cfg->stableFrames ? _cfg->stableFrames : 1;
+  const bool  relative = (_cfg->occupancyMode == OCCUPANCY_RELATIVE);
+  const float relDelta = (_cfg->relDelta > 0.0f) ? _cfg->relDelta : 1.0f;  // floor so the band can't collapse
 
   int count = 0;
   for (int i = 0; i < _cfg->roiCount && i < MAX_ROIS; i++) {
     const Roi& roi = _cfg->rois[i];
     SlotResult& sr = out.slots[i];
-    sr.threshold = (roi.threshold > 0.0f) ? roi.threshold : globalThr;
+    // Effective threshold/delta (also shown in the UI). In relative mode every
+    // bay uses the global delta against its own baseline; the per-ROI absolute
+    // override applies only in absolute mode.
+    sr.threshold = relative ? relDelta : ((roi.threshold > 0.0f) ? roi.threshold : globalThr);
 
     // Polygon vertices in pixel space + bounding box.
     float vx[MAX_POLY], vy[MAX_POLY];
@@ -157,10 +166,21 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
       continue;
     }
 
-    // Hysteresis around the effective threshold.
+    // In relative mode, seed the empty baseline on the very first frame so the
+    // first decision compares against a real reference, not zero (which would
+    // read as instantly occupied). A bay genuinely occupied at boot (or the first
+    // time it is enabled) then seeds high and reads empty until its first
+    // departure — a deliberate trade for lighting robustness; absolute mode is
+    // correct from boot if that matters.
+    if (relative && !_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; }
+
+    // Occupancy metric: absolute edge, or its rise above the empty baseline.
+    float metric = relative ? (edge - _baselineEdge[i]) : edge;
+
+    // Hysteresis around the effective threshold/delta.
     float enter = sr.threshold * (1.0f + hys);
     float exit  = sr.threshold * (1.0f - hys);
-    bool raw = _committed[i] ? (edge >= exit) : (edge > enter);
+    bool raw = _committed[i] ? (metric >= exit) : (metric > enter);
     sr.rawOccupied = raw;
 
     // Debounce: require the raw decision to persist before committing.
@@ -179,8 +199,12 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
     }
     _lastRaw[i] = raw;
 
-    // Adaptive empty-edge baseline (diagnostic / auto-threshold helper):
-    // track the edge level only while the slot is committed-empty and stable.
+    // Adaptive empty-edge baseline: track the edge while the bay is committed-
+    // empty and stable, and freeze it while occupied so a long-parked car can't
+    // pull the reference up. In relative mode this is the live reference the
+    // decision subtracts (ambient light drift cancels out); in absolute mode it
+    // is just a diagnostic / auto-threshold helper. It adapts in both modes, so
+    // toggling to relative finds a warmed-up baseline ready to use.
     if (!_committed[i] && _stableCnt[i] == 0) {
       if (!_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; }
       else _baselineEdge[i] += _cfg->baselineEma * (edge - _baselineEdge[i]);

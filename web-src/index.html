@@ -143,7 +143,7 @@
     </div>
     <div class="card">
       <h2>Slots</h2>
-      <table><thead><tr><th>Slot</th><th>Edge</th><th>Thr</th><th>State</th></tr></thead>
+      <table><thead><tr><th>Slot</th><th>Edge</th><th>Base</th><th>Thr</th><th>State</th></tr></thead>
       <tbody id="slotTable"></tbody></table>
     </div>
   </section>
@@ -152,16 +152,23 @@
   <section id="detect">
     <div class="card">
       <h2>Detection sensitivity</h2>
+      <label>Occupancy mode</label>
+      <select id="c_occupancyMode"><option value="0">Absolute edge threshold</option><option value="1">Relative to empty baseline (lighting-robust)</option></select>
       <div class="row">
-        <div><label>Global edge threshold</label><input type="number" id="c_edgeThreshold" step="0.5"></div>
+        <div><label>Global edge threshold (absolute)</label><input type="number" id="c_edgeThreshold" step="0.5"></div>
+        <div><label>Relative delta (above baseline)</label><input type="number" id="c_relDelta" step="0.5" min="0"></div>
+      </div>
+      <div class="row">
         <div><label>Hysteresis (0–0.9)</label><input type="number" id="c_hysteresis" step="0.05" min="0" max="0.9"></div>
+        <div><label>Stable frames (debounce)</label><input type="number" id="c_stableFrames" step="1" min="1" max="60"></div>
       </div>
       <div class="row">
         <div><label>Baseline EMA (0–0.2)</label><input type="number" id="c_baselineEma" step="0.005" min="0" max="0.2"></div>
-        <div><label>Stable frames (debounce)</label><input type="number" id="c_stableFrames" step="1" min="1" max="60"></div>
+        <div><label>Capture interval (ms)</label><input type="number" id="c_captureIntervalMs" step="100" min="200"></div>
       </div>
-      <label>Capture interval (ms)</label><input type="number" id="c_captureIntervalMs" step="100" min="200">
-      <div class="hint">Higher edge threshold = less sensitive. Watch the live Edge values: empty asphalt is low, a parked car is high. Set the threshold between the two.</div>
+      <div class="hint">Watch each bay's live <b>Edge</b> and <b>Baseline</b>. <b>Absolute:</b> set the threshold between empty-asphalt edge and parked-car edge. <b>Relative</b> (best for sun vs shade): a bay trips when its Edge rises the <i>delta</i> above its own auto-tracked empty Baseline, so changing light cancels out. Raise <b>Stable frames</b> to ride out moving shadows and passing clouds.</div>
+      <div class="btns"><button class="btn" id="recalibrate">Mark empty now</button></div>
+      <div class="hint">Snaps each bay's Baseline to the current view. Press only when <b>all bays are empty</b> — handy right after boot, or to calibrate the relative baseline without waiting for it to adapt.</div>
     </div>
     <div class="card">
       <h2>Send trigger</h2>
@@ -396,7 +403,7 @@ $("#tabs").addEventListener("click", e=>{
 });
 
 // ---- form binding ----
-const F = ["edgeThreshold","hysteresis","baselineEma","stableFrames","captureIntervalMs",
+const F = ["occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma","stableFrames","captureIntervalMs",
   "triggerMode","triggerThreshold","minSendIntervalMs","heartbeatIntervalS",
   "whEnabled","whUrl","whAuthHeaderName","whAuthHeaderValue","whTlsInsecure",
   "spoolMode","spoolMaxEntries","spoolMaxKB","spoolBackend",
@@ -413,6 +420,7 @@ function fill(){
     else if(SECRET.includes(k)) el.value="";   // never prefill secrets
     else el.value=cfg[k];
   }
+  $("#c_occupancyMode").value=String(cfg.occupancyMode);
   $("#c_triggerMode").value=String(cfg.triggerMode);
   $("#c_framesize").value=String(cfg.framesize);
   $("#c_afMode").value=String(cfg.afMode);
@@ -425,7 +433,7 @@ function collect(keys){
     if(el.type==="checkbox") o[k]=el.checked;
     else if(SECRET.includes(k)){ if(el.value!=="") o[k]=el.value; }   // omit blank secrets
     else if(el.tagName==="SELECT") o[k]=parseInt(el.value,10);        // dropdowns are numeric (framesize, triggerMode)
-    else if(el.type==="number") o[k]=parseFloat(el.value);
+    else if(el.type==="number"){ const v=parseFloat(el.value); if(!isNaN(v)) o[k]=v; }   // omit a blank field -> keep the stored value
     else o[k]=el.value;
   }
   return o;
@@ -445,7 +453,7 @@ async function loadCfg(){ cfg=await api("/api/config"); fill();
   if(!dirty){ rois=(cfg.rois||[]).map(r=>({name:r.name,points:(r.points||[]).map(p=>({x:p.x,y:p.y})),threshold:r.threshold||0,enabled:r.enabled})); renderRois(); }
   $("#pwBanner").classList.toggle("show", !!st.mustChangePass); }
 
-$("#saveDetect").onclick=()=>save(["edgeThreshold","hysteresis","baselineEma","stableFrames","captureIntervalMs","triggerMode","triggerThreshold","minSendIntervalMs","heartbeatIntervalS"]);
+$("#saveDetect").onclick=()=>save(["occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma","stableFrames","captureIntervalMs","triggerMode","triggerThreshold","minSendIntervalMs","heartbeatIntervalS"]);
 $("#saveWebhook").onclick=()=>save(["whEnabled","whUrl","whAuthHeaderName","whAuthHeaderValue","whTlsInsecure"]);
 $("#saveSpool").onclick=()=>save(["spoolMode","spoolMaxEntries","spoolMaxKB","spoolBackend"]);
 $("#clearSpool").onclick=async()=>{ if(!confirm("Clear all queued events?")) return; try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"clear_spool"})}); toast("Queue cleared");}catch(e){toast("Clear failed",true);} };
@@ -455,6 +463,7 @@ $("#saveMqtt").onclick=()=>save(["mqttEnabled","mqttHost","mqttPort","mqttTls","
 $("#testMqtt").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_mqtt"})}); toast(r.ok?"Published":"MQTT not connected",!r.ok);}catch(e){toast("MQTT failed",true);} };
 $("#saveImage").onclick=()=>save(["framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode"]);
 $("#focusNow").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"af_focus"})}); toast(r.ok?"Focusing…":"AF unavailable",!r.ok);}catch(e){toast("AF failed",true);} };
+$("#recalibrate").onclick=async()=>{ if(!confirm("Snap every bay's baseline to the current view? Press only when ALL bays are empty.")) return; try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"recalibrate"})}); toast("Recalibrated — baselines re-seeding");}catch(e){toast("Recalibrate failed",true);} };
 $("#saveAdmin").onclick=()=>save(["adminUser","adminPass"]);
 $("#saveWifi").onclick=()=>save(["staSsid","staPass","hostname","apSsid","apPass"]);
 $("#saveWatchdog").onclick=()=>save(["offlineRebootMin"]);
@@ -612,7 +621,7 @@ async function poll(){
     if(st.slots){
       const tb=$("#slotTable"); tb.innerHTML="";
       st.slots.forEach(s=>{ const occ=s.enabled===false?"dis":(s.occupied?"occ":"free");
-        tb.insertAdjacentHTML("beforeend",`<tr><td>${s.name}</td><td>${s.edge!=null?s.edge.toFixed(1):"–"}</td><td>${s.threshold!=null?s.threshold.toFixed(0):"–"}</td><td><span class="dot ${occ}"></span>${s.enabled===false?"disabled":(s.occupied?"occupied":"free")}</td></tr>`);
+        tb.insertAdjacentHTML("beforeend",`<tr><td>${s.name}</td><td>${s.edge!=null?s.edge.toFixed(1):"–"}</td><td>${s.baselineEdge!=null?s.baselineEdge.toFixed(1):"–"}</td><td>${s.threshold!=null?s.threshold.toFixed(0):"–"}</td><td><span class="dot ${occ}"></span>${s.enabled===false?"disabled":(s.occupied?"occupied":"free")}</td></tr>`);
       });
     }
     // system

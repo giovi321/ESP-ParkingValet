@@ -60,6 +60,17 @@ void otaMarkValidIfPending() {
   }
 }
 
+// "Mark empty now": clear committed occupancy and re-arm every bay's adaptive
+// empty baseline so it re-seeds from the next frame. Press it (web action) when
+// all bays are genuinely empty to instantly calibrate the relative-mode baseline
+// instead of waiting for the EMA to converge — and to fix the cold-start case
+// where a car parked at boot seeds the baseline high. Runs on the loopTask (via
+// the web handler), so it never races analyze().
+void cvRecalibrate() {
+  cvEngine.reset();
+  log_i("CV recalibrated: baselines re-seed from the current (empty) view");
+}
+
 static void hangWatchdogTask(void*) {
   const uint32_t LIMIT_MS = 90000;   // no progress this long -> reboot to recover
   for (;;) {

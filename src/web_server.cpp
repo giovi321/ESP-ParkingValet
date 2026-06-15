@@ -28,6 +28,7 @@
 extern int sendStatsNow();   // defined in main.cpp
 extern void noteLoopAlive();  // hang-watchdog heartbeat (main.cpp)
 extern void otaMarkValidIfPending();  // confirm a pending OTA image before a voluntary reboot (main.cpp)
+extern void cvRecalibrate();          // "mark empty now": re-seed per-bay baselines (main.cpp)
 
 static WebServer  server(80);
 static Config*    g_cfg  = nullptr;
@@ -285,6 +286,9 @@ static void handleAction() {
     server.send(200, "application/json", mqttConnected() ? "{\"ok\":true}" : "{\"ok\":false,\"err\":\"not connected\"}");
   } else if (!strcmp(action, "clear_spool")) {
     spoolClear();
+    server.send(200, "application/json", "{\"ok\":true}");
+  } else if (!strcmp(action, "recalibrate")) {
+    cvRecalibrate();   // re-seed empty baselines from the current view (relative occupancy mode)
     server.send(200, "application/json", "{\"ok\":true}");
   } else {
     server.send(400, "application/json", "{\"ok\":false,\"err\":\"unknown action\"}");

@@ -169,6 +169,19 @@ This is the part that decides how well it works. Mount the camera so every bay i
    responsiveness for CPU.
 5. Leave it running from sun to cloud and confirm it doesn't flip on moving shadows.
 
+If the count differs between sunny and overcast — empty bays reading occupied in hard sun, or
+occupied bays reading empty in flat light — switch **Occupancy mode** to **Relative**. Instead of a
+fixed threshold, each bay tracks its own "empty" edge level and trips only when the edge rises by
+**Relative delta** above it, so the whole scene drifting brighter or darker cancels out. Tune by
+watching the **Edge** and **Base** columns: pick a delta a bit below the gap a parked car opens up
+over its empty baseline. (Relative assumes a bay starts empty at boot; if one is occupied at boot it
+reads empty until the car first leaves. Absolute mode stays available and is boot-accurate.)
+
+The baseline self-learns, but you can also seed it directly: when every bay is empty, hit **Mark empty
+now** in the Detection card. That snaps each bay's Baseline to the current view instead of waiting for
+it to adapt — the quick fix for the boot-with-a-car-parked case, and a fast way to re-zero after you
+move the camera or change the scene.
+
 Polygons are stored normalized (0 to 1), so they survive a resolution change.
 
 ---
@@ -226,11 +239,13 @@ Everything here is editable in the UI and saved to NVS. Defaults come from
 | | `mqttIntervalS` | `60` | Diagnostics refresh interval (count goes out immediately). |
 | Trigger | `triggerMode` | `0` | 0 sends on any count change, 1 sends when it crosses threshold N. |
 | | `triggerThreshold` | `1` | N, for threshold mode. |
-| | `minSendIntervalMs` | `5000` | Rate-limit between sends. |
+| | `minSendIntervalMs` | `5000` | Min gap between *new* count-change sends (rate-limit at the source). A queued backlog drains faster than this — capped at 1 s/entry — so a reconnect doesn't leave the latest count stuck behind stale ones. |
 | | `heartbeatIntervalS` | `0` | 0 is off, otherwise a periodic snapshot. |
-| Detection | `edgeThreshold` | `12.0` | Global occupancy threshold (mean abs gradient). |
+| Detection | `occupancyMode` | `0` | `0` absolute edge threshold, `1` relative to each bay's adaptive empty baseline (cancels sun/shade drift). |
+| | `edgeThreshold` | `12.0` | Absolute mode: global occupancy threshold (mean abs gradient). |
+| | `relDelta` | `6.0` | Relative mode: edge rise above the empty baseline that counts as occupied. |
 | | `hysteresis` | `0.25` | Enter at thr·(1+h), exit at thr·(1−h). |
-| | `baselineEma` | `0.02` | How fast the empty baseline adapts. |
+| | `baselineEma` | `0.02` | How fast the empty baseline adapts (the live reference in relative mode). |
 | | `stableFrames` | `4` | Cycles a bay's state must hold before it commits. |
 | | `captureIntervalMs` | `1500` | Capture/analyze cadence. |
 | Image | `framesize` | `9` (SVGA 800×600) | QVGA up to UXGA; bigger is sharper but slower. |
@@ -284,6 +299,12 @@ again.
 Now there's a queue. Every count change is written to flash first, then delivered when the link
 comes back. It survives a WiFi blip and a full reboot, including the offline-reboot watchdog firing
 in the middle of an outage. When the queue fills up, the oldest entry drops off.
+
+When the link returns, the backlog drains quickly — up to one entry per second, not one per
+`minSendIntervalMs` — so the most recent count reaches the channel within seconds instead of
+trailing the whole backlog. (`minSendIntervalMs` still rate-limits how often *new* changes are
+queued; it no longer throttles replay.) If the receiver is down, delivery backs off to the full
+interval rather than hammering it.
 
 You choose what gets saved in the **Offline spool** card:
 
@@ -353,7 +374,7 @@ In STA mode every route needs Digest auth. In AP/setup mode they're open.
 | `GET` | `/api/log` | The on-device log ring buffer (this is what the web serial console reads). |
 | `GET` | `/api/backup` | Download the full config as JSON (includes secrets). |
 | `POST` | `/api/restore` | Restore a backup, then reboot. |
-| `POST` | `/api/action` | `{"action":"reboot\|factory_reset\|ap_mode\|test_webhook\|test_stats\|test_mqtt\|af_focus\|clear_spool"}`. |
+| `POST` | `/api/action` | `{"action":"reboot\|factory_reset\|ap_mode\|test_webhook\|test_stats\|test_mqtt\|af_focus\|clear_spool\|recalibrate"}`. `recalibrate` = "mark empty now" (re-seed the per-bay baselines). |
 | `POST` | `/update` | OTA firmware upload (`.bin`). |
 
 ---
