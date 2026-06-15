@@ -177,10 +177,12 @@ watching the **Edge** and **Base** columns: pick a delta a bit below the gap a p
 over its empty baseline. (Relative assumes a bay starts empty at boot; if one is occupied at boot it
 reads empty until the car first leaves. Absolute mode stays available and is boot-accurate.)
 
-The baseline self-learns, but you can also seed it directly: when every bay is empty, hit **Mark empty
-now** in the Detection card. That snaps each bay's Baseline to the current view instead of waiting for
-it to adapt — the quick fix for the boot-with-a-car-parked case, and a fast way to re-zero after you
-move the camera or change the scene.
+The baseline self-learns, but you can also seed it directly. Each row of the Slots table has a **mark
+empty** button that snaps just that bay's Baseline to the current view — so you can calibrate one bay
+while the others stay occupied, which matters because a real lot is rarely all-empty at once. The
+Detection card also has a **Mark all bays empty** button for when the whole lot is clear (e.g. right
+after boot). Either way it's instant, instead of waiting for the baseline to adapt — the quick fix for
+the boot-with-a-car-parked case, and a fast way to re-zero after you move the camera.
 
 Polygons are stored normalized (0 to 1), so they survive a resolution change.
 
@@ -374,7 +376,7 @@ In STA mode every route needs Digest auth. In AP/setup mode they're open.
 | `GET` | `/api/log` | The on-device log ring buffer (this is what the web serial console reads). |
 | `GET` | `/api/backup` | Download the full config as JSON (includes secrets). |
 | `POST` | `/api/restore` | Restore a backup, then reboot. |
-| `POST` | `/api/action` | `{"action":"reboot\|factory_reset\|ap_mode\|test_webhook\|test_stats\|test_mqtt\|af_focus\|clear_spool\|recalibrate"}`. `recalibrate` = "mark empty now" (re-seed the per-bay baselines). |
+| `POST` | `/api/action` | `{"action":"reboot\|factory_reset\|ap_mode\|test_webhook\|test_stats\|test_mqtt\|af_focus\|clear_spool\|recalibrate"}`. `recalibrate` = "mark empty now"; add `"slot":N` to re-seed just bay N, omit it for all bays. |
 | `POST` | `/update` | OTA firmware upload (`.bin`). |
 
 ---

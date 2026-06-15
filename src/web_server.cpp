@@ -28,7 +28,7 @@
 extern int sendStatsNow();   // defined in main.cpp
 extern void noteLoopAlive();  // hang-watchdog heartbeat (main.cpp)
 extern void otaMarkValidIfPending();  // confirm a pending OTA image before a voluntary reboot (main.cpp)
-extern void cvRecalibrate();          // "mark empty now": re-seed per-bay baselines (main.cpp)
+extern void cvRecalibrate(int index); // "mark empty now": re-seed baselines (index<0 = all bays) (main.cpp)
 
 static WebServer  server(80);
 static Config*    g_cfg  = nullptr;
@@ -288,7 +288,9 @@ static void handleAction() {
     spoolClear();
     server.send(200, "application/json", "{\"ok\":true}");
   } else if (!strcmp(action, "recalibrate")) {
-    cvRecalibrate();   // re-seed empty baselines from the current view (relative occupancy mode)
+    int slot = doc["slot"] | -1;   // -1 / absent = all bays; otherwise just that bay
+    if (slot < -1 || slot >= MAX_ROIS) { server.send(400, "application/json", "{\"ok\":false,\"err\":\"bad slot\"}"); return; }
+    cvRecalibrate(slot);           // re-seed empty baseline(s) from the current view (relative occupancy mode)
     server.send(200, "application/json", "{\"ok\":true}");
   } else {
     server.send(400, "application/json", "{\"ok\":false,\"err\":\"unknown action\"}");

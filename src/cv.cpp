@@ -18,6 +18,16 @@ void CvEngine::reset() {
   }
 }
 
+void CvEngine::recalibrate(int index) {
+  if (index < 0) { reset(); return; }      // all bays
+  if (index >= MAX_ROIS) return;           // out of range -> no-op
+  _committed[index]    = false;
+  _lastRaw[index]      = false;
+  _stableCnt[index]    = 0;
+  _baselineEdge[index] = 0.0f;
+  _baselineInit[index] = false;            // re-seeds from the next frame (relative mode)
+}
+
 uint32_t CvEngine::roiSignature() const {
   // Cheap hash of ROI geometry/count so we can reset state when they change.
   uint32_t h = 2166136261u;

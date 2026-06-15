@@ -45,6 +45,12 @@ class CvEngine {
   // Forget per-slot debounce/baseline state (call when ROIs change).
   void reset();
 
+  // Re-arm one bay's empty baseline (index < 0 = all bays): clear its committed
+  // state and force the baseline to re-seed from the next frame. Backs the
+  // per-bay "mark empty now" action, so a single empty bay can be calibrated
+  // without needing the whole lot empty at once.
+  void recalibrate(int index);
+
  private:
   const Config* _cfg = nullptr;
 
