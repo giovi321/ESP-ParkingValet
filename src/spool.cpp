@@ -22,9 +22,11 @@ static uint32_t      s_nextSeq = 0;        // next seq to assign
 static uint32_t      s_count   = 0;        // queued entries
 static uint32_t      s_bytes   = 0;        // sum of queued file sizes (logical)
 static uint32_t      s_lastDrainMs = 0;
+static bool          s_lastDrainFailed = false; // last delivery failed -> back off the next attempt
 
 static const char* SDIR        = "/spool";
 static const size_t FS_MARGIN  = 8192;     // keep this many bytes free in the FS
+static const uint32_t DRAIN_MAX_MS = 1000; // cap on the gap between queued sends (backlog pace)
 
 static void pathBin(uint32_t seq, char* buf, size_t n) { snprintf(buf, n, "%s/%08u.bin", SDIR, (unsigned)seq); }
 static void pathTmp(uint32_t seq, char* buf, size_t n) { snprintf(buf, n, "%s/%08u.tmp", SDIR, (unsigned)seq); }
@@ -218,8 +220,20 @@ void spoolDrain() {
   if (!ensureMounted() || s_count == 0) return;
 
   uint32_t now = millis();
-  uint32_t iv  = s_cfg->minSendIntervalMs;
-  if (iv && (uint32_t)(now - s_lastDrainMs) < iv) return;   // don't hammer the receiver
+  // Drain pace. The *source* rate is already bounded at enqueue time (maybeSend
+  // gates on minSendIntervalMs before it queues a change), so the drain must NOT
+  // re-apply that full interval: doing so drained at most one entry per
+  // minSendIntervalMs — the same rate the queue fills — so a backlog never caught
+  // up, the queue pinned at its cap (dropping the oldest), and the freshest count
+  // sat ever further behind. Drain a healthy backlog fast (<=1s/entry: clears a
+  // full 20-deep queue in ~20s and stays under a chat's per-message rate), but
+  // after a delivery FAILURE back off to the full live interval so a broken
+  // receiver isn't hammered. A floor of DRAIN_MAX_MS applies even when the
+  // configured interval is 0, so an unset rate-limit can't turn into a flood.
+  uint32_t iv = s_cfg->minSendIntervalMs;
+  uint32_t gate = s_lastDrainFailed ? (iv ? iv : DRAIN_MAX_MS)               // broken link: don't hammer
+                                    : ((iv && iv < DRAIN_MAX_MS) ? iv : DRAIN_MAX_MS); // backlog: drain fast
+  if ((uint32_t)(now - s_lastDrainMs) < gate) return;
   s_lastDrainMs = now;
 
   char path[40]; pathBin(s_head, path, sizeof(path));
@@ -266,9 +280,11 @@ void spoolDrain() {
   webNoteSend(event, count, code);
 
   if (code >= 200 && code < 400) {
+    s_lastDrainFailed = false;
     log_i("spool: delivered #%u (HTTP %d) -> %u left", (unsigned)s_head, code, (unsigned)(s_count - 1));
     deleteHead();
   } else {
+    s_lastDrainFailed = true;   // throttle the next attempt: a down receiver gets the full interval
     log_w("spool: delivery of #%u failed (%d); %u still queued", (unsigned)s_head, code, (unsigned)s_count);
   }
 }
