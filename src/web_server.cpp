@@ -27,6 +27,7 @@
 
 extern int sendStatsNow();   // defined in main.cpp
 extern void noteLoopAlive();  // hang-watchdog heartbeat (main.cpp)
+extern void otaMarkValidIfPending();  // confirm a pending OTA image before a voluntary reboot (main.cpp)
 
 static WebServer  server(80);
 static Config*    g_cfg  = nullptr;
@@ -40,17 +41,32 @@ static int      s_lastSendCount = 0;
 static int      s_lastSendCode  = 0;
 static uint32_t s_lastSendAt    = 0;
 static bool     s_otaAuthFail   = false;
+static bool     s_otaBeginOk    = false;   // Update.begin() succeeded for the current upload
+static bool     s_otaOk         = false;   // a complete, plausibly-sized image was flashed OK
 static bool     s_camStopped    = false;   // camera deinit'd for an in-progress OTA
 
+// Smallest upload we'll treat as a real firmware image. Guards against a zero- or
+// near-empty multipart part reaching Update.end(true) (which, with no bytes
+// written, flashes an uninitialized buffer into the partition header). Mirrors the
+// web UI's client-side floor; the real image is ~1.2 MB.
+static const size_t MIN_OTA_BYTES = 65536;
+
 // --- helpers ---------------------------------------------------------------
+
+// Effective admin username for Digest auth. Never empty: a blank adminUser (which
+// the config API/UI can persist) must NOT silently disable auth, so it falls back
+// to the factory default. Otherwise one blank-username save would open every
+// endpoint — including the firmware-flashing /update — to anyone on the network.
+static const char* authUser() {
+  return g_cfg->adminUser[0] ? g_cfg->adminUser : DEFAULT_ADMIN_USER;
+}
 
 static bool requireAuth() {
   // AP/config mode is gated by the WPA2 AP password (physical proximity), so we
   // skip Digest there to keep first-time setup and captive portals smooth.
   // STA mode is network-exposed, so it always requires Digest auth.
   if (netIsAP()) return true;
-  if (g_cfg->adminUser[0] &&
-      !server.authenticate(g_cfg->adminUser, g_cfg->adminPass)) {
+  if (!server.authenticate(authUser(), g_cfg->adminPass)) {
     server.requestAuthentication(DIGEST_AUTH, "ESP-ParkingValet", "Authentication required");
     return false;
   }
@@ -287,7 +303,9 @@ static void handleOtaUpload() {
   noteLoopAlive();   // loop() is blocked here for the whole upload; keep the hang watchdog fed per chunk
   if (up.status == UPLOAD_FILE_START) {
     s_otaAuthFail = false;
-    if (g_cfg->adminUser[0] && !server.authenticate(g_cfg->adminUser, g_cfg->adminPass)) {
+    s_otaBeginOk  = false;
+    s_otaOk       = false;
+    if (!server.authenticate(authUser(), g_cfg->adminPass)) {
       s_otaAuthFail = true;
       return;
     }
@@ -298,15 +316,26 @@ static void handleOtaUpload() {
     esp_camera_deinit();
     s_camStopped = true;
     if (Update.isRunning()) Update.abort();   // clear any stale/aborted attempt
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) log_e("OTA begin failed: %s", Update.errorString());
+    // Latch whether begin() actually succeeded: it can fail (e.g. a 4KB sector-
+    // buffer malloc fail) WITHOUT setting Update's error flag, which would
+    // otherwise make handleOtaDone report a no-op flash as success.
+    s_otaBeginOk = Update.begin(UPDATE_SIZE_UNKNOWN);
+    if (!s_otaBeginOk) log_e("OTA begin failed: %s", Update.errorString());
   } else if (up.status == UPLOAD_FILE_WRITE) {
-    if (s_otaAuthFail) return;
+    if (s_otaAuthFail || !s_otaBeginOk) return;
     if (Update.write(up.buf, up.currentSize) != up.currentSize)
       log_e("OTA write failed: %s", Update.errorString());
   } else if (up.status == UPLOAD_FILE_END) {
-    if (s_otaAuthFail) return;
-    if (Update.end(true)) log_i("OTA ok: %u bytes", (unsigned)up.totalSize);
-    else log_e("OTA end failed: %s", Update.errorString());
+    if (s_otaAuthFail || !s_otaBeginOk) return;
+    // Only finalize a plausibly-complete image. Calling end(true) with zero bytes
+    // written flashes an uninitialized buffer into the partition header.
+    if (up.totalSize >= MIN_OTA_BYTES && Update.end(true)) {
+      s_otaOk = true;
+      log_i("OTA ok: %u bytes", (unsigned)up.totalSize);
+    } else {
+      Update.abort();
+      log_e("OTA end failed (%u bytes): %s", (unsigned)up.totalSize, Update.errorString());
+    }
   } else if (up.status == UPLOAD_FILE_ABORTED) {
     Update.abort();
     otaRestoreCamera();   // upload interrupted -> bring the camera back
@@ -320,12 +349,14 @@ static void handleOtaDone() {
     server.requestAuthentication(DIGEST_AUTH, "ESP-ParkingValet", "Authentication required");
     return;
   }
-  if (!Update.hasError()) {
+  if (s_otaOk) {
     server.send(200, "application/json", "{\"ok\":true}");
     scheduleReboot(800);   // camera stays down; the reboot brings it back
   } else {
-    otaRestoreCamera();    // failed update -> restore the camera we stopped at start
-    JsonDocument r; r["ok"] = false; r["err"] = Update.errorString();   // surface the reason to the UI
+    otaRestoreCamera();    // failed/rejected update -> restore the camera we stopped at start
+    // begin() can fail without latching an Update error, so give a useful reason.
+    const char* err = !s_otaBeginOk ? "flash init failed (low memory?)" : Update.errorString();
+    JsonDocument r; r["ok"] = false; r["err"] = err;   // surface the reason to the UI
     String out; serializeJson(r, out);
     server.send(200, "application/json", out);
   }
@@ -382,6 +413,7 @@ void webLoop() {
   }
   server.handleClient();
   if (s_rebootPending && (int32_t)(millis() - s_rebootAt) >= 0) {
+    otaMarkValidIfPending();   // a voluntary reboot must not revert an image that's been running fine
     log_w("rebooting (scheduled)");
     delay(50);
     ESP.restart();

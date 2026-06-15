@@ -45,6 +45,21 @@ static int      lastMqttCount   = -2;
 // 5s task-WDT only watches the idle task, not loopTask, so this fills the gap.
 static volatile uint32_t s_loopBeat = 0;
 void noteLoopAlive() { s_loopBeat = millis(); }
+
+// Confirm a freshly-OTA'd image as valid (cancel bootloader rollback) if it is
+// still pending. Idempotent and safe from any healthy context. Exposed so a
+// voluntary reboot (web "reboot", config-change reboot, …) issued inside the 15s
+// auto-confirm window below can't revert an image that has been running fine.
+void otaMarkValidIfPending() {
+  const esp_partition_t* run = esp_ota_get_running_partition();
+  esp_ota_img_states_t imgState;
+  if (run && esp_ota_get_state_partition(run, &imgState) == ESP_OK &&
+      imgState == ESP_OTA_IMG_PENDING_VERIFY) {
+    esp_ota_mark_app_valid_cancel_rollback();
+    log_i("OTA image confirmed valid (rollback cancelled)");
+  }
+}
+
 static void hangWatchdogTask(void*) {
   const uint32_t LIMIT_MS = 90000;   // no progress this long -> reboot to recover
   for (;;) {
@@ -231,13 +246,7 @@ void loop() {
   if (loopStartMs == 0) loopStartMs = millis();
   if (!otaConfirmed && (millis() - loopStartMs) > 15000) {
     otaConfirmed = true;
-    const esp_partition_t* run = esp_ota_get_running_partition();
-    esp_ota_img_states_t imgState;
-    if (run && esp_ota_get_state_partition(run, &imgState) == ESP_OK &&
-        imgState == ESP_OTA_IMG_PENDING_VERIFY) {
-      esp_ota_mark_app_valid_cancel_rollback();
-      log_i("OTA image confirmed valid (rollback cancelled)");
-    }
+    otaMarkValidIfPending();
     spoolArm();   // only now let the spool touch flash — image is committed
   }
 
