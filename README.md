@@ -170,19 +170,30 @@ This is the part that decides how well it works. Mount the camera so every bay i
 5. Leave it running from sun to cloud and confirm it doesn't flip on moving shadows.
 
 If the count differs between sunny and overcast — empty bays reading occupied in hard sun, or
-occupied bays reading empty in flat light — switch **Occupancy mode** to **Relative**. Instead of a
-fixed threshold, each bay tracks its own "empty" edge level and trips only when the edge rises by
-**Relative delta** above it, so the whole scene drifting brighter or darker cancels out. Tune by
-watching the **Edge** and **Base** columns: pick a delta a bit below the gap a parked car opens up
-over its empty baseline. (Relative assumes a bay starts empty at boot; if one is occupied at boot it
-reads empty until the car first leaves. Absolute mode stays available and is boot-accurate.)
+occupied bays reading empty in flat light — switch **Occupancy mode** to **Relative**. Each bay tracks
+its own auto-learned "empty" edge level (its **Baseline**) and trips only when the edge rises by
+**Relative delta** above it, so the whole scene drifting brighter or darker cancels out.
 
-The baseline self-learns, but you can also seed it directly. Each row of the Slots table has a **mark
-empty** button that snaps just that bay's Baseline to the current view — so you can calibrate one bay
-while the others stay occupied, which matters because a real lot is rarely all-empty at once. The
-Detection card also has a **Mark all bays empty** button for when the whole lot is clear (e.g. right
-after boot). Either way it's instant, instead of waiting for the baseline to adapt — the quick fix for
-the boot-with-a-car-parked case, and a fast way to re-zero after you move the camera.
+Two separate things, don't confuse them:
+
+- **Relative delta** is the *threshold* — how far above empty counts as a car. **You** set this, once,
+  globally. Tune it by watching the **Edge** and **Base** columns: pick a value a bit below the gap a
+  parked car opens over its empty baseline.
+- **Baseline** is *what empty looks like*, per bay. It is **automatic** — it self-learns and keeps
+  following the light, so it covers the whole sun→cloud continuum on its own. You never type a
+  baseline, and **mark empty** does not change the delta.
+
+Because the Baseline tracks light continuously, you do **not** teach it separate "sunny" and "cloudy"
+states — pressing **mark empty** twice doesn't store two situations; each press just overwrites the
+Baseline with the current view. You only seed it directly when it's wrong: each Slots-table row has a
+**mark empty** button that snaps just that bay's Baseline to the current view, so you can calibrate one
+empty bay while the others stay occupied (a real lot is rarely all-empty at once). The Detection card's
+**Mark all bays empty** does every bay for an all-clear moment. Use it to fix a mis-reading bay, after a
+boot with a car already parked, or after you move the camera — not on a schedule.
+
+(Relative assumes a bay starts empty when first seeded; if a car is parked when you seed it, that bay
+reads empty until the car leaves once, then self-heals. Absolute mode stays available and is
+boot-accurate if you prefer a fixed threshold.)
 
 Polygons are stored normalized (0 to 1), so they survive a resolution change.
 
