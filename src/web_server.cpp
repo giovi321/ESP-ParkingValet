@@ -29,6 +29,7 @@ extern int sendStatsNow();   // defined in main.cpp
 extern void noteLoopAlive();  // hang-watchdog heartbeat (main.cpp)
 extern void otaMarkValidIfPending();  // confirm a pending OTA image before a voluntary reboot (main.cpp)
 extern void cvRecalibrate(int index); // "mark empty now": re-seed baselines (index<0 = all bays) (main.cpp)
+extern void cvMarkOccupied(int index); // "mark occupied now": force one bay occupied (relative re-base) (main.cpp)
 
 static WebServer  server(80);
 static Config*    g_cfg  = nullptr;
@@ -291,6 +292,11 @@ static void handleAction() {
     int slot = doc["slot"] | -1;   // -1 / absent = all bays; otherwise just that bay
     if (slot < -1 || slot >= MAX_ROIS) { server.send(400, "application/json", "{\"ok\":false,\"err\":\"bad slot\"}"); return; }
     cvRecalibrate(slot);           // re-seed empty baseline(s) from the current view (relative occupancy mode)
+    server.send(200, "application/json", "{\"ok\":true}");
+  } else if (!strcmp(action, "mark_occupied")) {
+    int slot = doc["slot"] | -1;   // single bay only (no "all occupied")
+    if (slot < 0 || slot >= MAX_ROIS) { server.send(400, "application/json", "{\"ok\":false,\"err\":\"bad slot\"}"); return; }
+    cvMarkOccupied(slot);          // force this bay occupied; relative mode re-bases so it sticks
     server.send(200, "application/json", "{\"ok\":true}");
   } else {
     server.send(400, "application/json", "{\"ok\":false,\"err\":\"unknown action\"}");

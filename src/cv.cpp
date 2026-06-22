@@ -15,6 +15,7 @@ void CvEngine::reset() {
     _stableCnt[i]    = 0;
     _baselineEdge[i] = 0.0f;
     _baselineInit[i] = false;
+    _lastEdge[i]     = 0.0f;
   }
 }
 
@@ -26,6 +27,53 @@ void CvEngine::recalibrate(int index) {
   _stableCnt[index]    = 0;
   _baselineEdge[index] = 0.0f;
   _baselineInit[index] = false;            // re-seeds from the next frame (relative mode)
+}
+
+void CvEngine::markOccupied(int index) {
+  if (index < 0 || index >= MAX_ROIS) return;   // single bay only (no "all occupied")
+  _committed[index] = true;
+  _lastRaw[index]   = true;
+  _stableCnt[index] = 0;
+  if (_cfg && _cfg->occupancyMode == OCCUPANCY_RELATIVE) {
+    float hys   = constrain(_cfg->hysteresis, 0.0f, 0.9f);
+    float delta = (_cfg->relDelta > 0.0f) ? _cfg->relDelta : 1.0f;
+    float enter = delta * (1.0f + hys);
+    // Put the empty reference one entry-band below the bay's current edge, so the
+    // live metric (edge - baseline) sits right at the entry level: the bay reads
+    // occupied now, yet drops to empty (and the EMA relearns the true baseline)
+    // once the car actually leaves and the edge falls below this reference.
+    float base = _lastEdge[index] - enter;
+    _baselineEdge[index] = base > 0.0f ? base : 0.0f;
+    _baselineInit[index] = true;
+  }
+}
+
+void CvEngine::snapshotState(CvPersist& o) const {
+  o.magic    = CV_PERSIST_MAGIC;
+  o.roiCount = (uint16_t)(_cfg ? _cfg->roiCount : 0);
+  o.roiSig   = roiSignature();
+  for (int i = 0; i < MAX_ROIS; i++) {
+    o.baselineEdge[i] = _baselineEdge[i];
+    o.baselineInit[i] = _baselineInit[i] ? 1 : 0;
+    o.committed[i]    = _committed[i] ? 1 : 0;
+  }
+}
+
+bool CvEngine::restoreState(const CvPersist& in) {
+  if (in.magic != CV_PERSIST_MAGIC) return false;
+  if (in.roiSig != roiSignature())  return false;   // ROI geometry changed -> ignore, seed live
+  for (int i = 0; i < MAX_ROIS; i++) {
+    _baselineEdge[i] = in.baselineEdge[i];
+    _baselineInit[i] = in.baselineInit[i] != 0;
+    _committed[i]    = in.committed[i] != 0;
+    _lastRaw[i]      = _committed[i];                // align debounce with the restored commit
+    _stableCnt[i]    = 0;
+    _lastEdge[i]     = _baselineEdge[i];             // plausible until the first analyze() runs
+  }
+  // Adopt the current signature so the first analyze() doesn't see a "changed ROI
+  // set" (member starts 0) and reset() away everything we just restored.
+  _roiSig = roiSignature();
+  return true;
 }
 
 uint32_t CvEngine::roiSignature() const {
@@ -169,6 +217,7 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
     float edge  = cnt ? (float)gradSum / (float)cnt : 0.0f;
     float meanI = cnt ? (float)intSum  / (float)cnt : 0.0f;
     sr.edge = edge; sr.meanI = meanI;
+    _lastEdge[i] = edge;   // remembered for markOccupied()'s re-base math
 
     if (!roi.enabled) {
       // Keep geometry but do not count; report instantaneous values only.

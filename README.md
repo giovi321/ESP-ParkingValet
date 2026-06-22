@@ -191,9 +191,16 @@ empty bay while the others stay occupied (a real lot is rarely all-empty at once
 **Mark all bays empty** does every bay for an all-clear moment. Use it to fix a mis-reading bay, after a
 boot with a car already parked, or after you move the camera — not on a schedule.
 
-(Relative assumes a bay starts empty when first seeded; if a car is parked when you seed it, that bay
-reads empty until the car leaves once, then self-heals. Absolute mode stays available and is
-boot-accurate if you prefer a fixed threshold.)
+Baselines are saved to flash and reloaded on boot, so a reboot — the offline-reboot watchdog, an OTA,
+a power cycle — no longer throws the learning away and makes occupied bays read empty until they turn
+over. (The save is throttled and only happens when a baseline actually moves, so flash wear stays
+low.) The one case left is the very first time a bay is seeded with a car already in it, before
+anything is stored: press that row's **mark occupied** button to fix it on the spot. In relative mode
+it re-bases the bay so it reads occupied immediately and then self-heals — once the car leaves, the
+edge drops below the new reference and the Baseline relearns true empty. **Mark occupied** is the
+inverse of **mark empty**; both are per-bay.
+
+(Absolute mode stays available and is boot-accurate if you prefer a fixed threshold.)
 
 Polygons are stored normalized (0 to 1), so they survive a resolution change.
 
@@ -387,7 +394,7 @@ In STA mode every route needs Digest auth. In AP/setup mode they're open.
 | `GET` | `/api/log` | The on-device log ring buffer (this is what the web serial console reads). |
 | `GET` | `/api/backup` | Download the full config as JSON (includes secrets). |
 | `POST` | `/api/restore` | Restore a backup, then reboot. |
-| `POST` | `/api/action` | `{"action":"reboot\|factory_reset\|ap_mode\|test_webhook\|test_stats\|test_mqtt\|af_focus\|clear_spool\|recalibrate"}`. `recalibrate` = "mark empty now"; add `"slot":N` to re-seed just bay N, omit it for all bays. |
+| `POST` | `/api/action` | `{"action":"reboot\|factory_reset\|ap_mode\|test_webhook\|test_stats\|test_mqtt\|af_focus\|clear_spool\|recalibrate\|mark_occupied"}`. `recalibrate` = "mark empty now" (add `"slot":N` for one bay, omit for all); `mark_occupied` = force one bay occupied, requires `"slot":N`. |
 | `POST` | `/update` | OTA firmware upload (`.bin`). |
 
 ---
@@ -433,6 +440,7 @@ src/
   camera.{h,cpp}          camera init, live sensor settings, OV5640 autofocus
   config_store.{h,cpp}    NVS config model, defaults, JSON, backup/restore
   cv.{h,cpp}              on-device polygon occupancy CV
+  cv_state.{h,cpp}        persist per-bay baselines to NVS so they survive reboots
   clk.{h,cpp}             NTP / UTC clock
   net.{h,cpp}             WiFi STA/AP state machine, webhook POST (multipart and JSON)
   spool.{h,cpp}           offline store-and-forward queue (LittleFS) for count changes

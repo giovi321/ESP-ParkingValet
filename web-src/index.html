@@ -471,6 +471,11 @@ $("#slotTable").addEventListener("click",async(e)=>{ const b=e.target.closest("b
   const i=parseInt(b.dataset.empty,10); const row=b.closest("tr"); const name=row?row.firstElementChild.textContent:("bay "+i);
   if(!confirm(`Mark "${name}" empty now? Do this only when that bay is actually empty.`)) return;
   try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"recalibrate",slot:i})}); toast(`"${name}" re-baselined`);}catch(err){toast("Mark empty failed",true);} });
+// Per-bay "mark occupied" buttons (inverse of mark empty; fixes a bay that seeded its baseline while occupied).
+$("#slotTable").addEventListener("click",async(e)=>{ const b=e.target.closest("button[data-occ]"); if(!b) return;
+  const i=parseInt(b.dataset.occ,10); const row=b.closest("tr"); const name=row?row.firstElementChild.textContent:("bay "+i);
+  if(!confirm(`Mark "${name}" occupied now? Use when this bay is occupied but reads free (relative mode).`)) return;
+  try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"mark_occupied",slot:i})}); toast(`"${name}" marked occupied`);}catch(err){toast("Mark occupied failed",true);} });
 $("#saveAdmin").onclick=()=>save(["adminUser","adminPass"]);
 $("#saveWifi").onclick=()=>save(["staSsid","staPass","hostname","apSsid","apPass"]);
 $("#saveWatchdog").onclick=()=>save(["offlineRebootMin"]);
@@ -628,7 +633,7 @@ async function poll(){
     if(st.slots){
       const tb=$("#slotTable"); tb.innerHTML="";
       st.slots.forEach((s,i)=>{ const occ=s.enabled===false?"dis":(s.occupied?"occ":"free");
-        const act=s.enabled===false?"":`<button class="btn sm" data-empty="${i}" title="Re-baseline this bay (mark it empty now)">mark empty</button>`;
+        const act=s.enabled===false?"":`<button class="btn sm" data-empty="${i}" title="Re-baseline this bay (mark it empty now)">mark empty</button> <button class="btn sm" data-occ="${i}" title="Force this bay occupied now — relative mode re-bases so it sticks, then self-heals when the car leaves">mark occ</button>`;
         tb.insertAdjacentHTML("beforeend",`<tr><td>${esc(s.name)}</td><td>${s.edge!=null?s.edge.toFixed(1):"–"}</td><td>${s.baselineEdge!=null?s.baselineEdge.toFixed(1):"–"}</td><td>${s.threshold!=null?s.threshold.toFixed(0):"–"}</td><td><span class="dot ${occ}"></span>${s.enabled===false?"disabled":(s.occupied?"occupied":"free")}</td><td>${act}</td></tr>`);
       });
     }

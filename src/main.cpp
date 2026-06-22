@@ -3,6 +3,7 @@
 #include "config_store.h"
 #include "camera.h"
 #include "cv.h"
+#include "cv_state.h"
 #include "net.h"
 #include "buttons.h"
 #include "web_server.h"
@@ -60,6 +61,37 @@ void otaMarkValidIfPending() {
   }
 }
 
+// --- CV baseline persistence (survive reboots) ----------------------------
+// The relative-mode empty baseline lives only in RAM and is re-seeded from the
+// first frame after boot. Since this device reboots itself (offline watchdog,
+// OTA), a bay occupied at reboot would seed an "occupied" baseline and read empty
+// until it turns over. We snapshot the baselines to NVS while running and restore
+// them on boot. Writes are throttled and change-gated, so a stable lot writes
+// nothing and flash wear stays bounded.
+static const uint32_t CV_SAVE_INTERVAL_MS = 5UL * 60UL * 1000UL;
+static CvPersist s_cvSaved;              // last blob written (for change detection)
+static bool      s_cvSavedValid = false;
+static uint32_t  s_cvLastCheckMs = 0;
+
+static bool cvStateDiffers(const CvPersist& a, const CvPersist& b) {
+  if (a.roiSig != b.roiSig || a.roiCount != b.roiCount) return true;
+  for (int i = 0; i < MAX_ROIS; i++) {
+    if (a.committed[i] != b.committed[i] || a.baselineInit[i] != b.baselineInit[i]) return true;
+    float d = a.baselineEdge[i] - b.baselineEdge[i]; if (d < 0) d = -d;
+    float ref = a.baselineEdge[i] > 1.0f ? a.baselineEdge[i] : 1.0f;
+    if (d > 0.05f * ref) return true;    // baseline drifted > 5%
+  }
+  return false;
+}
+
+// Snapshot the engine baselines and write them to NVS, but only when they moved
+// since the last save (force=true overrides, for a deliberate user action).
+static void cvStatePersist(bool force) {
+  CvPersist cur; cvEngine.snapshotState(cur);
+  if (!force && s_cvSavedValid && !cvStateDiffers(s_cvSaved, cur)) return;
+  if (cvStateSave(cur)) { s_cvSaved = cur; s_cvSavedValid = true; }
+}
+
 // "Mark empty now": clear committed occupancy and re-arm a bay's adaptive empty
 // baseline so it re-seeds from the next frame. index < 0 does every bay; a
 // specific index does just that one, so a single empty bay can be calibrated
@@ -70,8 +102,18 @@ void otaMarkValidIfPending() {
 // (via the web handler), so it never races analyze().
 void cvRecalibrate(int index) {
   cvEngine.recalibrate(index);
+  cvStatePersist(true);   // persist immediately so the recalibration survives a reboot
   if (index < 0) log_i("CV recalibrated: all baselines re-seed from the current view");
   else           log_i("CV recalibrated: bay %d re-seeds its baseline from the current view", index);
+}
+
+// "Mark occupied now": force one bay to read occupied (relative mode re-bases its
+// baseline so the reading sticks and then self-heals when the car leaves). Fixes
+// a bay that seeded its baseline while occupied. Same loopTask context as above.
+void cvMarkOccupied(int index) {
+  cvEngine.markOccupied(index);
+  cvStatePersist(true);
+  log_i("CV: bay %d forced occupied (baseline re-based for relative mode)", index);
 }
 
 static void hangWatchdogTask(void*) {
@@ -228,6 +270,19 @@ void setup() {
   cvEngine.begin(&cfg);
   lastResult.valid = false;
 
+  // Restore the per-bay baselines learned before the last reboot, so occupied
+  // bays don't read empty until they turn over. Ignored (seed live) on first boot
+  // or after an ROI geometry change.
+  {
+    CvPersist blob;
+    if (cvStateLoad(blob) && cvEngine.restoreState(blob)) {
+      s_cvSaved = blob; s_cvSavedValid = true;
+      log_i("CV baselines restored from NVS (survived reboot)");
+    } else {
+      log_i("CV baselines: none stored or geometry changed -> seeding live");
+    }
+  }
+
   netBegin(&cfg);
   bool sta = false;
   if (!forcedAp) sta = netStartSTA();
@@ -271,6 +326,11 @@ void loop() {
   maybeSendStats();
   mqttLoop();
   spoolDrain();   // deliver any queued count changes once the link is back
+
+  if (millis() - s_cvLastCheckMs >= CV_SAVE_INTERVAL_MS) {   // throttled, change-gated baseline save
+    s_cvLastCheckMs = millis();
+    cvStatePersist(false);
+  }
 
   uint32_t now = millis();
   if (now - lastCaptureMs >= cfg.captureIntervalMs) {

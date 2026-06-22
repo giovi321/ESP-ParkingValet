@@ -33,6 +33,23 @@ struct CvResult {
   SlotResult slots[MAX_ROIS];
 };
 
+// Per-bay state that must survive a reboot. In relative mode the empty baseline
+// is the live reference the decision subtracts; it lives only in RAM and is
+// re-seeded from the first frame after boot. Because this device reboots itself
+// (offline watchdog / OTA), a bay occupied at reboot would seed an "occupied"
+// baseline and read empty until it turns over. Persisting this blob to NVS and
+// restoring it on boot keeps the learned reference instead. Plain POD: written
+// to NVS verbatim, guarded by magic + the ROI signature (geometry change = drop).
+static const uint16_t CV_PERSIST_MAGIC = 0xCB01;
+struct CvPersist {
+  uint16_t magic;
+  uint16_t roiCount;
+  uint32_t roiSig;                   // ROI geometry hash; must match to restore
+  float    baselineEdge[MAX_ROIS];
+  uint8_t  baselineInit[MAX_ROIS];
+  uint8_t  committed[MAX_ROIS];
+};
+
 class CvEngine {
  public:
   // cfg is a live pointer (re-read every analyze()).
@@ -51,6 +68,20 @@ class CvEngine {
   // without needing the whole lot empty at once.
   void recalibrate(int index);
 
+  // Force one bay (index >= 0) to read occupied now. The inverse of "mark empty":
+  // in relative mode it lowers the bay's baseline one entry-band below its current
+  // edge so the live metric sits at the occupied threshold — fixing a bay that
+  // seeded its baseline while occupied and reads empty. Self-heals: once the car
+  // leaves, the edge drops below the re-based reference and the EMA relearns the
+  // true empty level. (In absolute mode it just commits occupied, best-effort.)
+  void markOccupied(int index);
+
+  // Serialize / restore the per-bay baseline state for NVS persistence. restore
+  // applies only when the stored ROI signature matches the live geometry (else it
+  // returns false and the engine seeds live as before).
+  void snapshotState(CvPersist& out) const;
+  bool restoreState(const CvPersist& in);
+
  private:
   const Config* _cfg = nullptr;
 
@@ -65,6 +96,7 @@ class CvEngine {
   uint16_t _stableCnt[MAX_ROIS];
   float    _baselineEdge[MAX_ROIS];
   bool     _baselineInit[MAX_ROIS];
+  float    _lastEdge[MAX_ROIS];        // most recent per-bay edge (for markOccupied)
 
   uint32_t _roiSig = 0;   // signature of current ROI set, to detect changes
 
