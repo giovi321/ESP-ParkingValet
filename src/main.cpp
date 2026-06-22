@@ -153,12 +153,13 @@ static bool shouldSend(int prev, int count) {
   return count != prev;                  // TRIG_ANY_CHANGE
 }
 
-static void postEvent(const char* event, camera_fb_t* fb, const CvResult& r, int count, int prev) {
+static int postEvent(const char* event, camera_fb_t* fb, const CvResult& r, int count, int prev) {
   bool slots[MAX_ROIS];
   for (int i = 0; i < r.n && i < MAX_ROIS; i++) slots[i] = r.slots[i].occupied;
-  int code = netSendEvent(cfg, event, fb->buf, fb->len, count, prev, slots, r.n);
+  int code = netSendEvent(cfg, event, fb->buf, fb->len, count, prev, slots, r.n);  // live -> queued=false
   webNoteSend(event, count, code);
   lastSendMs = millis();
+  return code;
 }
 
 static void maybeSend(camera_fb_t* fb, const CvResult& r) {
@@ -179,13 +180,24 @@ static void maybeSend(camera_fb_t* fb, const CvResult& r) {
   if (!shouldSend(lastSentCount, r.count)) return;
   if (now - lastSendMs < cfg.minSendIntervalMs) return;   // rate-limited; retry next cycle
 
-  // Durably queue the change (delivered now if online, else on reconnect/after a
-  // reboot) so it survives an outage. With the spool off, fall back to the
-  // legacy live best-effort send.
+  // Deliver the change. When the link is up and nothing is already queued, send
+  // it live WITH the freshly-captured photo (queued=false) — the common online
+  // case. Fall back to the durable spool only when offline, when a backlog is
+  // still draining (so we stay in order behind it), or when the live POST fails.
+  // A spooled entry is count-only in SPOOL_COUNT mode and replayed as queued=true,
+  // so routing live sends through it stripped the photo and mislabelled them as
+  // backlog. With the spool off entirely, use the legacy live best-effort send.
   if (cfg.spoolMode != SPOOL_OFF) {
     bool slots[MAX_ROIS];
     for (int i = 0; i < r.n && i < MAX_ROIS; i++) slots[i] = r.slots[i].occupied;
-    spoolEnqueue("count_changed", fb->buf, fb->len, r.count, lastSentCount, slots, r.n);
+    uint32_t qCount, qBytes; spoolStats(qCount, qBytes);
+    bool sentLive = false;
+    if (WiFi.status() == WL_CONNECTED && qCount == 0) {
+      int code = postEvent("count_changed", fb, r, r.count, lastSentCount);  // live, with photo
+      sentLive = (code >= 200 && code < 400);
+    }
+    if (!sentLive)
+      spoolEnqueue("count_changed", fb->buf, fb->len, r.count, lastSentCount, slots, r.n);
     lastSendMs = now;
   } else {
     postEvent("count_changed", fb, r, r.count, lastSentCount);

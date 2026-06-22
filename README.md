@@ -316,9 +316,12 @@ A count used to vanish if the network was down at the wrong moment. The board PO
 nothing answered, the change was gone. Worse, it moved on as though it had sent, so it never tried
 again.
 
-Now there's a queue. Every count change is written to flash first, then delivered when the link
-comes back. It survives a WiFi blip and a full reboot, including the offline-reboot watchdog firing
-in the middle of an outage. When the queue fills up, the oldest entry drops off.
+Now there's a queue. While the link is up and the queue is empty, a change is sent live with its
+freshly-captured photo. Only when the device is offline, still draining a backlog, or the live POST
+fails does the change get written to flash instead, to be delivered when the link comes back — so a
+live update keeps its photo, while a backfilled one is count-only. The queue survives a WiFi blip and
+a full reboot, including the offline-reboot watchdog firing in the middle of an outage. When the
+queue fills up, the oldest entry drops off.
 
 When the link returns, the backlog drains quickly — up to one entry per second, not one per
 `minSendIntervalMs` — so the most recent count reaches the channel within seconds instead of
