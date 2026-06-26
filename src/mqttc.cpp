@@ -6,6 +6,7 @@
 #include "esp_heap_caps.h"
 #include "net.h"
 #include "clk.h"
+#include "overlay.h"
 
 #ifndef PARKINGCAM_VERSION
 #define PARKINGCAM_VERSION "0.0.0"
@@ -29,6 +30,16 @@ static PubSubClient      s_mqtt;
 static uint32_t s_lastTry = 0;
 static uint32_t s_lastPub = 0;
 static bool     s_began   = false;
+
+// Per-bay control reuses the CV actions that back the web UI buttons (main.cpp).
+extern void cvRecalibrate(int index);   // "mark free": re-seed baseline(s) (index<0 = all)
+extern void cvMarkOccupied(int index);  // "mark occupied": force one bay occupied
+
+static volatile bool s_photoReq    = false;   // set by the receive callback, serviced in mqttLoop
+static uint32_t      s_lastPhotoMs = 0;
+static const uint32_t PHOTO_MIN_MS = 3000;    // rate-limit overlay photos
+static uint32_t      s_roiSig      = 0;       // detect ROI edits to refresh discovery
+static const char*   SETSTATE_IDLE = "-";     // select idle option (ASCII, see options list)
 
 static const char* NODE       = "parkingvalet";   // stable HA object_id / unique_id prefix
 static const char* DEVICE_ID  = "esp-parkingvalet";
@@ -81,6 +92,84 @@ static void addDevice(JsonObject o) {
   dev["cu"]   = GITHUB_URL;
 }
 
+// Cheap hash of bay count + names + enabled, to detect ROI edits and refresh
+// the per-bay HA entities (editing ROIs does not call mqttReconfigure()).
+static uint32_t roiSig() {
+  uint32_t hsh = 2166136261u;
+  auto mix = [&](uint32_t v) { hsh ^= v; hsh *= 16777619u; };
+  mix((uint32_t)s_cfg->roiCount);
+  for (int i = 0; i < s_cfg->roiCount && i < MAX_ROIS; i++) {
+    const Roi& r = s_cfg->rois[i];
+    for (const char* p = r.name; *p; p++) mix((uint8_t)*p);
+    mix(r.enabled ? 1u : 0u);
+  }
+  return hsh;
+}
+
+// Publish one HA discovery config (retained) under <prefix>/<component>/<node>/<obj>/config.
+static void publishCfg(const char* component, const String& obj, JsonDocument& d) {
+  const String prefix = s_cfg->mqttDiscoveryPrefix[0] ? s_cfg->mqttDiscoveryPrefix : "homeassistant";
+  char payload[640];
+  size_t n = serializeJson(d, payload, sizeof(payload));
+  String topic = prefix + "/" + component + "/" + NODE + "/" + obj + "/config";
+  s_mqtt.publish(topic.c_str(), (const uint8_t*)payload, n, true);
+}
+static void clearCfg(const char* component, const String& obj) {
+  const String prefix = s_cfg->mqttDiscoveryPrefix[0] ? s_cfg->mqttDiscoveryPrefix : "homeassistant";
+  String topic = prefix + "/" + component + "/" + NODE + "/" + obj + "/config";
+  s_mqtt.publish(topic.c_str(), (const uint8_t*)"", 0, true);   // empty retained = remove entity
+}
+
+// Per-bay occupancy binary_sensors + free/occupied selects, with stale cleanup.
+static void publishBayDiscovery() {
+  if (!s_cfg->mqttDiscovery) return;
+  const String base = baseTopic();
+  const String avty = availTopic();
+  for (int i = 0; i < s_cfg->roiCount && i < MAX_ROIS; i++) {
+    const char* nm = s_cfg->rois[i].name[0] ? s_cfg->rois[i].name : "Bay";
+    {
+      JsonDocument d;
+      d["name"]    = nm;
+      d["uniq_id"] = String(NODE) + "_bay" + i;
+      d["stat_t"]  = base + "/bay/" + i + "/state";
+      d["avty_t"]  = avty;
+      d["dev_cla"] = "occupancy";
+      addDevice(d.as<JsonObject>());
+      publishCfg("binary_sensor", String("bay") + i, d);
+    }
+    {
+      JsonDocument d;
+      d["name"]    = String(nm) + " control";
+      d["uniq_id"] = String(NODE) + "_bay" + i + "_set";
+      d["cmd_t"]   = base + "/bay/" + i + "/set";
+      d["stat_t"]  = base + "/bay/" + i + "/setstate";
+      d["avty_t"]  = avty;
+      JsonArray opt = d["options"].to<JsonArray>();
+      opt.add(SETSTATE_IDLE); opt.add("free"); opt.add("occupied");
+      addDevice(d.as<JsonObject>());
+      publishCfg("select", String("bay") + i + "_set", d);
+    }
+  }
+  for (int i = s_cfg->roiCount; i < MAX_ROIS; i++) {   // remove entities for dropped bays
+    clearCfg("binary_sensor", String("bay") + i);
+    clearCfg("select", String("bay") + i + "_set");
+  }
+}
+
+// Per-bay occupancy state (retained) + initial idle select state.
+static void publishBayState() {
+  const String base = baseTopic();
+  for (int i = 0; i < s_cfg->roiCount && i < MAX_ROIS; i++) {
+    bool occ = (s_last && s_last->valid && i < s_last->n) ? s_last->slots[i].occupied : false;
+    s_mqtt.publish((base + "/bay/" + i + "/state").c_str(), occ ? "ON" : "OFF", true);
+  }
+}
+static void publishBayIdle() {
+  const String base = baseTopic();
+  for (int i = 0; i < s_cfg->roiCount && i < MAX_ROIS; i++)
+    s_mqtt.publish((base + "/bay/" + i + "/setstate").c_str(), SETSTATE_IDLE, true);
+}
+
 static void publishDiscovery() {
   if (!s_cfg->mqttDiscovery) return;
   const String base   = baseTopic();
@@ -103,6 +192,7 @@ static void publishDiscovery() {
     String topic = prefix + "/sensor/" + NODE + "/" + f.key + "/config";
     s_mqtt.publish(topic.c_str(), (const uint8_t*)payload, n, true);   // retained
   }
+  publishBayDiscovery();
 }
 
 static void publishState() {
@@ -112,6 +202,36 @@ static void publishState() {
     if (!v.length()) continue;   // skip e.g. time before NTP sync
     s_mqtt.publish((base + "/" + FIELDS[i].key).c_str(), v.c_str(), true);   // retained
   }
+  publishBayState();
+}
+
+static void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
+  const String base = baseTopic();
+  String t(topic);
+  char body[16] = {0};
+  unsigned int n = len < sizeof(body) - 1 ? len : sizeof(body) - 1;
+  memcpy(body, payload, n);
+
+  if (t == base + "/cmd/photo") { s_photoReq = true; return; }
+  if (t == base + "/cmd/mark_all_free") { cvRecalibrate(-1); return; }
+
+  // base/bay/<i>/set
+  String pre = base + "/bay/";
+  if (t.startsWith(pre) && t.endsWith("/set")) {
+    int i = t.substring(pre.length(), t.length() - 4).toInt();
+    if (i < 0 || i >= MAX_ROIS) return;
+    if (!strcmp(body, "free"))          cvRecalibrate(i);
+    else if (!strcmp(body, "occupied")) cvMarkOccupied(i);
+    else return;   // ignore the "-" idle echo
+    s_mqtt.publish((base + "/bay/" + i + "/setstate").c_str(), SETSTATE_IDLE, true);  // reset so the same pick re-fires
+  }
+}
+
+static void subscribeCommands() {
+  const String base = baseTopic();
+  s_mqtt.subscribe((base + "/cmd/photo").c_str());
+  s_mqtt.subscribe((base + "/cmd/mark_all_free").c_str());
+  s_mqtt.subscribe((base + "/bay/+/set").c_str());
 }
 
 static bool connectNow() {
@@ -127,6 +247,9 @@ static bool connectNow() {
     s_mqtt.publish(avty.c_str(), "online", true);
     publishDiscovery();
     publishState();
+    subscribeCommands();
+    publishBayIdle();
+    s_roiSig = roiSig();
   } else {
     log_w("MQTT connect to %s:%u failed (rc=%d)", s_cfg->mqttHost, (unsigned)s_cfg->mqttPort, s_mqtt.state());
   }
@@ -143,6 +266,7 @@ void mqttBegin(const Config* cfg, const CvResult* last) {
   }
   s_mqtt.setBufferSize(2048);
   s_mqtt.setKeepAlive(30);
+  s_mqtt.setCallback(onMqttMessage);
   s_began = true;
 }
 
@@ -169,6 +293,11 @@ void mqttLoop() {
     return;
   }
   s_mqtt.loop();
+
+  // Refresh per-bay HA entities when the ROI set/name/enable changes.
+  uint32_t sig = roiSig();
+  if (sig != s_roiSig) { s_roiSig = sig; publishBayDiscovery(); publishBayState(); publishBayIdle(); }
+
   uint32_t iv = (s_cfg->mqttIntervalS ? s_cfg->mqttIntervalS : 60) * 1000UL;
   if (now - s_lastPub >= iv) { s_lastPub = now; publishState(); }
 }
