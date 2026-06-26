@@ -136,6 +136,7 @@ struct Config {
   bool awb;                  // auto white balance
   bool aec;                  // auto exposure
   int  afMode;               // OV5640 autofocus: 0=off/fixed, 1=auto once, 2=continuous
+  int16_t tzOffsetMin;       // minutes offset from UTC for the burned-in overlay timestamp (no DST)
 
   // --- ROIs ---
   int roiCount;

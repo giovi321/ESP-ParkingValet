@@ -84,6 +84,7 @@ void configLoadDefaults(Config& c) {
   c.awb         = true;
   c.aec         = true;
   c.afMode      = 1;     // focus once at boot (best for a fixed scene)
+  c.tzOffsetMin = 0;     // UTC by default
 
   c.roiCount = 0;
 }
@@ -157,6 +158,7 @@ static void serializeFull(const Config& c, JsonObject o) {
   o["awb"]         = c.awb;
   o["aec"]         = c.aec;
   o["afMode"]      = c.afMode;
+  o["tzOffsetMin"] = c.tzOffsetMin;
 
   JsonArray arr = o["rois"].to<JsonArray>();
   for (int i = 0; i < c.roiCount && i < MAX_ROIS; i++) {
@@ -269,6 +271,7 @@ static void parseFull(Config& c, JsonObjectConst o) {
   c.awb         = o["awb"]         | c.awb;
   c.aec         = o["aec"]         | c.aec;
   c.afMode      = o["afMode"]      | c.afMode;
+  c.tzOffsetMin = o["tzOffsetMin"] | c.tzOffsetMin;
 
   if (o["rois"].is<JsonArrayConst>()) parseRois(c, o["rois"].as<JsonArrayConst>());
 }
