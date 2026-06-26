@@ -250,7 +250,10 @@ static void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   // base/bay/<i>/set
   String pre = base + "/bay/";
   if (t.startsWith(pre) && t.endsWith("/set")) {
-    int i = t.substring(pre.length(), t.length() - 4).toInt();
+    String idx = t.substring(pre.length(), t.length() - 4);
+    if (idx.length() == 0) return;
+    for (size_t k = 0; k < idx.length(); k++) if (!isDigit(idx[k])) return;
+    int i = idx.toInt();
     if (i < 0 || i >= MAX_ROIS) return;
     if (!strcmp(body, "free"))          cvRecalibrate(i);
     else if (!strcmp(body, "occupied")) cvMarkOccupied(i);
@@ -319,19 +322,25 @@ void mqttReconfigure() {
 // write/endPublish rather than a single publish().
 static void publishPhoto() {
   if (!s_mqtt.connected()) return;
+  if (!s_last) return;
   uint8_t* jpg = nullptr;
   size_t len = overlayRenderJpeg(*s_cfg, *s_last, &jpg);
   if (!len || !jpg) return;
   String topic = baseTopic() + "/photo";
   if (s_mqtt.beginPublish(topic.c_str(), len, /*retained=*/true)) {
     size_t off = 0;
+    bool writeOk = true;
     while (off < len) {
       size_t chunk = (len - off) < 512 ? (len - off) : 512;
-      s_mqtt.write(jpg + off, chunk);
+      if (s_mqtt.write(jpg + off, chunk) != chunk) {
+        log_w("MQTT photo write short at off=%u len=%u", (unsigned)off, (unsigned)chunk);
+        writeOk = false;
+        break;
+      }
       off += chunk;
     }
     s_mqtt.endPublish();
-    log_i("MQTT photo published: %u bytes", (unsigned)len);
+    if (writeOk) log_i("MQTT photo published: %u bytes", (unsigned)len);
   } else {
     log_w("MQTT beginPublish failed for photo (%u bytes)", (unsigned)len);
   }

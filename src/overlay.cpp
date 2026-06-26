@@ -138,7 +138,7 @@ size_t overlayRenderJpeg(const Config& cfg, const CvResult& cv, uint8_t** out) {
 
     // label near centroid
     if (r.name[0]) {
-      int lx = (int)cx - (int)(strlen(r.name) * 6) / 2;
+      int lx = (int)cx - (int)(strlen(r.name) * 6);
       int ly = (int)cy - 7;
       if (lx < 2) lx = 2;
       drawText(rgb, w, h, lx, ly, r.name, COL_WHITE, 2);
