@@ -24,3 +24,13 @@ String clockIso() {
   strftime(b, sizeof(b), "%Y-%m-%dT%H:%M:%SZ", &tmv);
   return String(b);
 }
+
+String clockLocalStamp(int offsetMin) {
+  if (!clockSynced()) return String("");
+  time_t t = time(nullptr) + (time_t)offsetMin * 60;
+  struct tm tmv;
+  gmtime_r(&t, &tmv);   // gmtime on the already-offset epoch = local wall clock
+  char b[24];
+  strftime(b, sizeof(b), "%Y-%m-%d %H:%M:%S", &tmv);
+  return String(b);
+}

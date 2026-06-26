@@ -9,3 +9,4 @@ void   clockBegin();    // start the SNTP client (UTC)
 bool   clockSynced();   // true once the clock looks valid (post-2023)
 time_t clockEpoch();    // UTC seconds since epoch, or 0 if not yet synced
 String clockIso();      // "YYYY-MM-DDTHH:MM:SSZ" (UTC), or "" if not yet synced
+String clockLocalStamp(int offsetMin);  // "YYYY-MM-DD HH:MM:SS" local (UTC+offsetMin), or "" if unsynced
