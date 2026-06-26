@@ -26,9 +26,16 @@ auto-discovered `ESP-ParkingValet` device.
 
 - **Overlay richness:** polygon outline + translucent fill (green=free,
   red=occupied, grey=disabled, matching the web UI), **plus** bay-name text labels
-  **plus** a capture timestamp. Text needs a small bundled bitmap font.
+  **plus** a capture timestamp in **local time**. Text needs a small bundled
+  bitmap font.
+- **Per-bay control surface:** one **select** per bay (`free` / `occupied`), not
+  two buttons — halves the entity count.
 - **Photo topic retained:** yes — the last overlay image survives a broker/HA
-  restart. (~50 KB retained payload; the broker must allow a packet that size.)
+  restart. Broker message-size limit confirmed unlimited (mosquitto), so the
+  ~50 KB retained payload is fine.
+- **Timezone:** the overlay timestamp uses a **configurable UTC offset** set in
+  the web UI (`cfg.tzOffsetMin`, minutes). Fixed offset, no automatic DST. MQTT
+  `time` / stats timestamps stay UTC (HA localizes those itself).
 - **Trigger model:** command-only. No automatic overlay-photo publish on count
   change (the webhook path already ships photos on count change).
 
@@ -62,7 +69,8 @@ auto-discovered `ESP-ParkingValet` device.
 | Topic | Payload | Notes |
 |---|---|---|
 | `base/count` | integer | existing |
-| `base/bay/<i>/state` | `ON` / `OFF` | `ON`=occupied. One per configured ROI. |
+| `base/bay/<i>/state` | `ON` / `OFF` | `ON`=occupied. One per configured ROI. Feeds the binary_sensor. |
+| `base/bay/<i>/setstate` | `—` | idle value for the control select; published (retained) on connect and after each command so the same action can re-fire. |
 | `base/photo` | JPEG bytes | overlay image, published on command, **retained** |
 
 ### Commands — device subscribes
@@ -70,8 +78,9 @@ auto-discovered `ESP-ParkingValet` device.
 |---|---|---|
 | `base/cmd/photo` | any | capture + overlay + publish `base/photo` (rate-limited) |
 | `base/cmd/mark_all_free` | any | `cvRecalibrate(-1)` |
-| `base/bay/<i>/set` | `free` | `cvRecalibrate(i)` |
-| `base/bay/<i>/set` | `occupied` | `cvMarkOccupied(i)` |
+| `base/bay/<i>/set` | `free` | `cvRecalibrate(i)`, then publish `—` to `base/bay/<i>/setstate` |
+| `base/bay/<i>/set` | `occupied` | `cvMarkOccupied(i)`, then publish `—` to `base/bay/<i>/setstate` |
+| `base/bay/<i>/set` | `—` | ignored (idle reset echo) |
 
 One wildcard subscription `base/bay/+/set` covers every bay; `base/cmd/photo` and
 `base/cmd/mark_all_free` are subscribed explicitly.
@@ -83,27 +92,30 @@ Added alongside the existing `FIELDS[]` sensor configs, all under the same devic
 
 - **N × binary_sensor** — `dev_cla: occupancy`, `stat_t: base/bay/<i>/state`,
   name = ROI name, `uniq_id: parkingvalet_bay<i>`.
-- **N × 2 buttons** — `<name> – mark free` (`cmd_t: base/bay/<i>/set`,
-  `payload_press: free`) and `<name> – mark occupied` (`payload_press: occupied`),
-  `uniq_id: parkingvalet_bay<i>_free` / `_occ`.
+- **N × select** — `<name> control`, `cmd_t: base/bay/<i>/set`,
+  `stat_t: base/bay/<i>/setstate`, `options: ["—","free","occupied"]`,
+  `uniq_id: parkingvalet_bay<i>_set`. Selecting `free`/`occupied` issues the
+  calibration command; the device then republishes `—` so the select returns to
+  idle and the same action can be selected again.
 - **1 × button** "Take photo" — `cmd_t: base/cmd/photo`, `payload_press: 1`.
 - **1 × button** "Mark all free" — `cmd_t: base/cmd/mark_all_free`.
 - **1 × camera** "Snapshot" — `t: base/photo` (raw JPEG, no `image_encoding`),
   `uniq_id: parkingvalet_photo`.
 
-For 12 ROIs that is ~36 entities, all grouped under the one device.
+For 12 ROIs that is ~24 entities (12 occupancy sensors + 12 selects) plus 3
+controls and the camera, all grouped under the one device.
 
 ### Discovery refresh on ROI changes
 
 Editing ROIs (count, names, enable) does **not** currently trigger
 `mqttReconfigure()`. To keep HA entities in sync, `mqttLoop()` tracks a cheap ROI
 signature (hash of `roiCount` + each `name` + `enabled`). When it changes,
-re-publish bay discovery + bay state. Discovery is also (re)published on every
-(re)connect, as today.
+re-publish bay discovery + bay state + idle `setstate`. Discovery is also
+(re)published on every (re)connect, as today.
 
 **Stale-entity cleanup:** when `roiCount` shrinks, publish an empty retained
 payload to the config topics of bay indices `roiCount..MAX_ROIS-1`
-(binary_sensor + both buttons) so HA removes the dropped entities.
+(binary_sensor + select) so HA removes the dropped entities.
 
 ## Module: `overlay.cpp` / `overlay.h` (new)
 
@@ -128,8 +140,9 @@ Pipeline:
    - color: green=free, red=occupied, grey=disabled (web-UI palette:
      `#2ecc71` / `#ff5b5b` / grey),
    - the bay name as a label near the polygon centroid.
-4. Draw the timestamp (`clockIso()` if `clockEpoch()>0`, else `uptime <s>s`) in a
-   corner.
+4. Draw the timestamp in a corner: **local time** via a new
+   `clockLocalStamp(cfg.tzOffsetMin)` helper (UTC epoch + offset, formatted
+   `YYYY-MM-DD HH:MM:SS`); if the clock is not yet synced, draw `uptime <s>s`.
 5. `fmt2jpg(RGB565 → JPEG, cfg.jpegQuality)` → `*out`.
 6. Return the fb, free the RGB565 buffer, return the JPEG length.
 
@@ -152,13 +165,15 @@ The renderer reads occupancy from `cv.slots[i].occupied` and geometry/enable fro
     callback).
   - `base/cmd/mark_all_free` → `cvRecalibrate(-1)`.
   - `base/bay/<i>/set` → parse `i`; payload `free` → `cvRecalibrate(i)`,
-    `occupied` → `cvMarkOccupied(i)`.
+    `occupied` → `cvMarkOccupied(i)`, then publish `—` (retained) to
+    `base/bay/<i>/setstate`; payload `—` ignored.
 - `connectNow()`: after `publishDiscovery()` + `publishState()`, subscribe to the
-  three command topics.
-- `publishDiscovery()`: extended to also emit the bay binary_sensors, bay buttons,
+  three command topics and publish the initial idle `—` to each
+  `base/bay/<i>/setstate`.
+- `publishDiscovery()`: extended to also emit the bay binary_sensors, bay selects,
   the two control buttons, the camera, and the stale-index cleanup.
 - `publishState()`: extended to also publish `base/bay/<i>/state` (`ON`/`OFF`) for
-  `i in 0..roiCount`.
+  `i in 0..roiCount` (and the idle `setstate` for any bay missing one).
 - `publishPhoto()` (new): `overlayRenderJpeg()`, then stream with
   `s_mqtt.beginPublish(base/photo, len, /*retained=*/true)` + chunked `write()` +
   `endPublish()` (required — the JPEG far exceeds the 2048-byte buffer). Free the
@@ -172,6 +187,19 @@ The render + publish runs on the loopTask (after the receive callback returns),
 takes ~1–2 s, and is well under the 90 s hang-watchdog limit. It briefly pauses
 capture/analysis, acceptable for an on-demand action.
 
+## Timezone config (web UI)
+
+- `Config` gains `int16_t tzOffsetMin` (minutes from UTC; range -720..+840;
+  default 0). Added to `configLoadDefaults`, `configToJson`, `configMergeJson`,
+  and the NVS blob (non-secret).
+- `clk.cpp/.h` gains `String clockLocalStamp(int offsetMin)` — returns the local
+  wall-clock `YYYY-MM-DD HH:MM:SS`, or `""` if not yet NTP-synced.
+- `web-src/index.html` gains a settings field "Timezone offset (min from UTC)"
+  bound to `tzOffsetMin` (hint: `60 = UTC+1, 120 = UTC+2, -300 = UTC-5`). The
+  build regenerates `web_ui.h` from this file via the existing prebuild script.
+- Only the burned-in overlay timestamp uses this offset; MQTT/stats ISO
+  timestamps remain UTC.
+
 ## Error handling & edge cases
 
 - Camera unavailable (OTA deinit) → `overlayRenderJpeg` returns 0; `publishPhoto`
@@ -180,8 +208,10 @@ capture/analysis, acceptable for an on-demand action.
 - Clock not yet synced → timestamp shows uptime instead of a wall-clock time.
 - Photo command spam → rate-limited by `PHOTO_MIN_MS`.
 - Disabled bays → state published `OFF`, polygon drawn grey.
-- Retained ~50 KB photo → the broker's max packet / message size limit must allow
-  it (note in user-facing docs).
+- Select re-fire → after each command the device republishes `—`, so picking the
+  same option again still fires (HA selects only publish on value change).
+- Retained ~50 KB photo → broker message-size limit confirmed unlimited
+  (mosquitto); fine.
 - TLS (mqtts) → `beginPublish`/`write` work over `WiFiClientSecure`, just slower.
 
 ## Out of scope (YAGNI)
@@ -196,6 +226,10 @@ capture/analysis, acceptable for an on-demand action.
 ## Files touched
 
 - `src/overlay.h`, `src/overlay.cpp` — new renderer + bundled font.
-- `src/mqttc.cpp` — subscriptions, callback, per-bay discovery + state, photo
-  publish, ROI-change refresh.
-- (no change to `cv.*`, `main.cpp`, or the web UI.)
+- `src/mqttc.cpp` — subscriptions, callback, per-bay discovery + state + select,
+  photo publish, ROI-change refresh.
+- `src/clk.h`, `src/clk.cpp` — `clockLocalStamp(offsetMin)` helper.
+- `src/config_store.h`, `src/config_store.cpp` — `tzOffsetMin` field + JSON +
+  defaults.
+- `web-src/index.html` — timezone-offset settings field (regenerates `web_ui.h`).
+- (no change to `cv.*` or `main.cpp`.)
