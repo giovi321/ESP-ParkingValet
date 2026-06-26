@@ -154,6 +154,38 @@ static void publishBayDiscovery() {
     clearCfg("binary_sensor", String("bay") + i);
     clearCfg("select", String("bay") + i + "_set");
   }
+  // Snapshot camera + two control buttons (published once with the bay configs).
+  {
+    JsonDocument d;
+    d["name"]    = "Snapshot";
+    d["uniq_id"] = String(NODE) + "_photo";
+    d["t"]       = base + "/photo";
+    d["avty_t"]  = avty;
+    addDevice(d.as<JsonObject>());
+    publishCfg("camera", "photo", d);
+  }
+  {
+    JsonDocument d;
+    d["name"]    = "Take photo";
+    d["uniq_id"] = String(NODE) + "_take_photo";
+    d["cmd_t"]   = base + "/cmd/photo";
+    d["pl_prs"]  = "1";
+    d["avty_t"]  = avty;
+    d["ic"]      = "mdi:camera";
+    addDevice(d.as<JsonObject>());
+    publishCfg("button", "take_photo", d);
+  }
+  {
+    JsonDocument d;
+    d["name"]    = "Mark all free";
+    d["uniq_id"] = String(NODE) + "_mark_all_free";
+    d["cmd_t"]   = base + "/cmd/mark_all_free";
+    d["pl_prs"]  = "1";
+    d["avty_t"]  = avty;
+    d["ic"]      = "mdi:broom";
+    addDevice(d.as<JsonObject>());
+    publishCfg("button", "mark_all_free", d);
+  }
 }
 
 // Per-bay occupancy state (retained) + initial idle select state.
@@ -282,6 +314,30 @@ void mqttReconfigure() {
   s_lastTry = 0;   // reconnect promptly with the new settings
 }
 
+// Render the overlay photo and stream it to base/photo. The JPEG is far larger
+// than the 2048-byte client buffer, so it MUST be streamed with beginPublish/
+// write/endPublish rather than a single publish().
+static void publishPhoto() {
+  if (!s_mqtt.connected()) return;
+  uint8_t* jpg = nullptr;
+  size_t len = overlayRenderJpeg(*s_cfg, *s_last, &jpg);
+  if (!len || !jpg) return;
+  String topic = baseTopic() + "/photo";
+  if (s_mqtt.beginPublish(topic.c_str(), len, /*retained=*/true)) {
+    size_t off = 0;
+    while (off < len) {
+      size_t chunk = (len - off) < 512 ? (len - off) : 512;
+      s_mqtt.write(jpg + off, chunk);
+      off += chunk;
+    }
+    s_mqtt.endPublish();
+    log_i("MQTT photo published: %u bytes", (unsigned)len);
+  } else {
+    log_w("MQTT beginPublish failed for photo (%u bytes)", (unsigned)len);
+  }
+  free(jpg);
+}
+
 void mqttLoop() {
   if (!s_began || !s_cfg->mqttEnabled || !s_cfg->mqttHost[0]) return;
   if (netIsAP() || WiFi.status() != WL_CONNECTED) return;
@@ -297,6 +353,11 @@ void mqttLoop() {
   // Refresh per-bay HA entities when the ROI set/name/enable changes.
   uint32_t sig = roiSig();
   if (sig != s_roiSig) { s_roiSig = sig; publishBayDiscovery(); publishBayState(); publishBayIdle(); }
+
+  if (s_photoReq && now - s_lastPhotoMs > PHOTO_MIN_MS) {
+    s_photoReq = false; s_lastPhotoMs = now;
+    publishPhoto();
+  }
 
   uint32_t iv = (s_cfg->mqttIntervalS ? s_cfg->mqttIntervalS : 60) * 1000UL;
   if (now - s_lastPub >= iv) { s_lastPub = now; publishState(); }
