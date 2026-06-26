@@ -315,6 +315,9 @@
       <div class="chk"><input type="checkbox" id="c_aec"><label for="c_aec" style="margin:0;color:var(--txt)">Auto exposure</label></div>
       <label>Autofocus (OV5640)</label>
       <select id="c_afMode"><option value="0">Off / fixed</option><option value="1">Auto once</option><option value="2">Continuous</option></select>
+      <label>Timezone offset for photo timestamp (minutes from UTC)</label>
+      <input type="number" id="c_tzOffsetMin" step="15" min="-720" max="840">
+      <div class="hint">Only affects the timestamp burned into the MQTT overlay photo. Fixed offset, no automatic DST. Examples: <code>60</code> = UTC+1, <code>120</code> = UTC+2, <code>-300</code> = UTC−5.</div>
       <div class="btns"><button class="btn" id="saveImage">Save</button><button class="ghost" id="focusNow">Focus now</button></div>
       <div class="hint">Higher resolution = sharper but slower; SVGA is a good default. For a fixed scene use <b>Auto once</b> — continuous AF can hunt and blur frames mid-analysis. (Needs AF-VCC powered on the module.)</div>
     </div>
@@ -412,7 +415,7 @@ const F = ["occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma"
   "statsEnabled","statsUrl","statsIntervalS","statsAuthHeaderName","statsAuthHeaderValue","statsTlsInsecure",
   "mqttEnabled","mqttHost","mqttPort","mqttTls","mqttTlsInsecure","mqttUser","mqttPass","mqttBaseTopic","mqttDiscovery","mqttDiscoveryPrefix","mqttIntervalS",
   "staSsid","staPass","hostname","offlineRebootMin","apSsid","apPass",
-  "framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode",
+  "framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode","tzOffsetMin",
   "adminUser","adminPass"];
 const SECRET = ["whAuthHeaderValue","statsAuthHeaderValue","mqttPass","staPass","apPass","adminPass"];
 
@@ -463,7 +466,7 @@ $("#saveStats").onclick=()=>save(["statsEnabled","statsUrl","statsIntervalS","st
 $("#testStats").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_stats"})}); toast(r.ok?("Stats sent · HTTP "+r.code):("Stats failed · "+r.code),!r.ok);}catch(e){toast("Stats failed",true);} };
 $("#saveMqtt").onclick=()=>save(["mqttEnabled","mqttHost","mqttPort","mqttTls","mqttTlsInsecure","mqttUser","mqttPass","mqttBaseTopic","mqttDiscovery","mqttDiscoveryPrefix","mqttIntervalS"]);
 $("#testMqtt").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_mqtt"})}); toast(r.ok?"Published":"MQTT not connected",!r.ok);}catch(e){toast("MQTT failed",true);} };
-$("#saveImage").onclick=()=>save(["framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode"]);
+$("#saveImage").onclick=()=>save(["framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode","tzOffsetMin"]);
 $("#focusNow").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"af_focus"})}); toast(r.ok?"Focusing…":"AF unavailable",!r.ok);}catch(e){toast("AF failed",true);} };
 $("#recalibrate").onclick=async()=>{ if(!confirm("Snap every bay's baseline to the current view? Press only when ALL bays are empty.")) return; try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"recalibrate"})}); toast("Recalibrated — baselines re-seeding");}catch(e){toast("Recalibrate failed",true);} };
 // Per-bay "mark empty" buttons in the Slots table (delegated; the tbody persists across re-renders).
