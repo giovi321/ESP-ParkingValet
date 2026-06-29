@@ -353,6 +353,20 @@
       <div class="hint">If a WiFi join fails the device falls back to this AP for setup. With <b>retry</b> set, it re-attempts the saved WiFi every N minutes and switches back to STA once it reconnects — staying in AP (and looping) until then; this hotspot is briefly unreachable during each attempt. <b>Auto-reboot</b> reboots after the device has been offline this long, as a last-resort recovery — set retry shorter than auto-reboot for it to run first. Either or both; 0 disables.</div>
     </div>
     <div class="card">
+      <h2>WireGuard remote access</h2>
+      <label>Enable</label><input type="checkbox" id="c_wgEnabled">
+      <label>Private key</label><input type="password" id="c_wgPrivateKey" placeholder="unchanged">
+      <label>Address (device tunnel IP, e.g. 10.6.0.7)</label><input type="text" id="c_wgAddress">
+      <label>Peer public key</label><input type="text" id="c_wgPeerPublicKey">
+      <label>Endpoint host</label><input type="text" id="c_wgEndpointHost">
+      <label>Endpoint port</label><input type="number" id="c_wgEndpointPort" min="1" max="65535">
+      <label>Allowed IPs (e.g. 10.6.0.0/24)</label><input type="text" id="c_wgAllowedIps">
+      <label>Preshared key (optional)</label><input type="password" id="c_wgPresharedKey" placeholder="unchanged">
+      <label>Keepalive seconds (25 recommended)</label><input type="number" id="c_wgKeepalive" min="0" max="65535">
+      <div class="btns"><button class="btn" id="saveWg">Save</button></div>
+      <div class="hint">Device dials out and joins your homelab WireGuard network; the UI then answers on the tunnel IP. The server peer must list this device's tunnel IP in its AllowedIPs. The tunnel only comes up after the clock is NTP-synced.</div>
+    </div>
+    <div class="card">
       <h2>Admin password</h2>
       <label>Username</label><input type="text" id="c_adminUser">
       <label>New password</label><input type="password" id="c_adminPass" placeholder="unchanged">
@@ -417,9 +431,10 @@ const F = ["occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma"
   "statsEnabled","statsUrl","statsIntervalS","statsAuthHeaderName","statsAuthHeaderValue","statsTlsInsecure",
   "mqttEnabled","mqttHost","mqttPort","mqttTls","mqttTlsInsecure","mqttUser","mqttPass","mqttBaseTopic","mqttDiscovery","mqttDiscoveryPrefix","mqttIntervalS",
   "staSsid","staPass","hostname","offlineRebootMin","apRetryMin","apSsid","apPass",
+  "wgEnabled","wgPrivateKey","wgAddress","wgPeerPublicKey","wgEndpointHost","wgEndpointPort","wgAllowedIps","wgPresharedKey","wgKeepalive",
   "framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode","tzOffsetMin",
   "adminUser","adminPass"];
-const SECRET = ["whAuthHeaderValue","statsAuthHeaderValue","mqttPass","staPass","apPass","adminPass"];
+const SECRET = ["whAuthHeaderValue","statsAuthHeaderValue","mqttPass","staPass","apPass","adminPass","wgPrivateKey","wgPresharedKey"];
 
 function fill(){
   for(const k of F){ const el=$("#c_"+k); if(!el||!(k in cfg)) continue;
@@ -484,6 +499,7 @@ $("#slotTable").addEventListener("click",async(e)=>{ const b=e.target.closest("b
 $("#saveAdmin").onclick=()=>save(["adminUser","adminPass"]);
 $("#saveWifi").onclick=()=>save(["staSsid","staPass","hostname","apSsid","apPass"]);
 $("#saveWatchdog").onclick=()=>save(["offlineRebootMin","apRetryMin"]);
+$("#saveWg").onclick=()=>save(["wgEnabled","wgPrivateKey","wgAddress","wgPeerPublicKey","wgEndpointHost","wgEndpointPort","wgAllowedIps","wgPresharedKey","wgKeepalive"]);
 
 $("#testWebhook").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_webhook"})}); toast(r.ok?("Test sent · HTTP "+r.code):("Test failed · "+r.code),!r.ok);}catch(e){toast("Test failed",true);} };
 
