@@ -182,6 +182,21 @@
       <label>Heartbeat interval (s, 0 = off)</label><input type="number" id="c_heartbeatIntervalS" step="60" min="0">
       <div class="btns"><button class="btn" id="saveDetect">Save</button></div>
     </div>
+    <div class="card">
+      <h2>Occupancy engine &amp; training</h2>
+      <label>Engine</label>
+      <select id="c_occupancyEngine">
+        <option value="0">Edge threshold (legacy)</option>
+        <option value="1">Trained classifier</option>
+      </select>
+      <label>Training capture (log per-bay features to the URL below)</label>
+      <input type="checkbox" id="c_trainCapture">
+      <label>Capture URL</label><input type="text" id="c_captureUrl" placeholder="https://…/capture">
+      <label>Capture auth header name</label><input type="text" id="c_captureAuthHeaderName" placeholder="e.g. X-API-Key">
+      <label>Capture auth header value</label><input type="password" id="c_captureAuthHeaderValue" placeholder="unchanged">
+      <div class="btns"><button class="btn" id="saveOccEngine">Save</button></div>
+      <div class="hint">"Trained classifier" uses the embedded model when present, otherwise falls back to the edge engine. Turn on Training capture to log per-bay feature vectors (throttled ~30 s) to the Capture URL for offline training.</div>
+    </div>
   </section>
 
   <!-- WEBHOOK -->
@@ -433,8 +448,9 @@ const F = ["occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma"
   "staSsid","staPass","hostname","offlineRebootMin","apRetryMin","apSsid","apPass",
   "wgEnabled","wgPrivateKey","wgAddress","wgPeerPublicKey","wgEndpointHost","wgEndpointPort","wgAllowedIps","wgPresharedKey","wgKeepalive",
   "framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode","tzOffsetMin",
-  "adminUser","adminPass"];
-const SECRET = ["whAuthHeaderValue","statsAuthHeaderValue","mqttPass","staPass","apPass","adminPass","wgPrivateKey","wgPresharedKey"];
+  "adminUser","adminPass",
+  "occupancyEngine","trainCapture","captureUrl","captureAuthHeaderName","captureAuthHeaderValue"];
+const SECRET = ["whAuthHeaderValue","statsAuthHeaderValue","mqttPass","staPass","apPass","adminPass","wgPrivateKey","wgPresharedKey","captureAuthHeaderValue"];
 
 function fill(){
   for(const k of F){ const el=$("#c_"+k); if(!el||!(k in cfg)) continue;
@@ -448,6 +464,7 @@ function fill(){
   $("#c_afMode").value=String(cfg.afMode);
   $("#c_spoolMode").value=String(cfg.spoolMode);
   $("#c_spoolBackend").value=String(cfg.spoolBackend);
+  $("#c_occupancyEngine").value=String(cfg.occupancyEngine);
 }
 function collect(keys){
   const o={};
@@ -500,6 +517,7 @@ $("#saveAdmin").onclick=()=>save(["adminUser","adminPass"]);
 $("#saveWifi").onclick=()=>save(["staSsid","staPass","hostname","apSsid","apPass"]);
 $("#saveWatchdog").onclick=()=>save(["offlineRebootMin","apRetryMin"]);
 $("#saveWg").onclick=()=>save(["wgEnabled","wgPrivateKey","wgAddress","wgPeerPublicKey","wgEndpointHost","wgEndpointPort","wgAllowedIps","wgPresharedKey","wgKeepalive"]);
+$("#saveOccEngine").onclick=()=>save(["occupancyEngine","trainCapture","captureUrl","captureAuthHeaderName","captureAuthHeaderValue"]);
 
 $("#testWebhook").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_webhook"})}); toast(r.ok?("Test sent · HTTP "+r.code):("Test failed · "+r.code),!r.ok);}catch(e){toast("Test failed",true);} };
 
