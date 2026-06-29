@@ -17,6 +17,7 @@
 #include "mqttc.h"
 #include "spool.h"
 #include "logbuf.h"
+#include "wg.h"
 
 #if defined(__has_include)
 #  if __has_include("build_info.h")
@@ -308,6 +309,7 @@ void setup() {
 
   clockBegin();   // start NTP (syncs once online)
   webBegin(&cfg, &lastResult);
+  wgBegin(&cfg);
   mqttBegin(&cfg, &lastResult);
   spoolBegin(&cfg);   // mount the offline queue + recover any pending events
   xTaskCreatePinnedToCore(hangWatchdogTask, "hangwdt", 2048, nullptr, 5, nullptr, 0);   // core 0; loopTask is core 1
@@ -333,6 +335,7 @@ void loop() {
 
   buttonsLoop();
   netLoop();
+  wgLoop(millis());
   webLoop();
   ledUpdate();
   maybeSendStats();
