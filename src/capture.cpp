@@ -17,9 +17,11 @@ void captureMaybeLog(const Config& cfg, const CvResult& r) {
   body += "{\"device\":\""; body += cfg.hostname; body += "\",";
   body += "\"ts\":"; body += String((uint32_t)clockEpoch()); body += ",";
   body += "\"bays\":[";
+  bool first = true;
   for (int i = 0; i < r.n && i < MAX_ROIS; i++) {
+    if (i < cfg.roiCount && !cfg.rois[i].enabled) continue;   // skip disabled bays (would train as mislabeled-empty)
     const SlotResult& s = r.slots[i];
-    if (i) body += ",";
+    if (!first) body += ","; first = false;
     body += "{\"i\":"; body += i;
     body += ",\"label\":"; body += (s.occupied ? 1 : 0);          // weak label = committed decision
     body += ",\"score\":"; body += String(s.clfScore, 3);

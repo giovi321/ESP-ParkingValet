@@ -25,6 +25,7 @@ static const Config*      s_cfg = nullptr;
 static wireguard_ctx_t    s_ctx = {0};
 static wireguard_config_t s_wg = ESP_WIREGUARD_CONFIG_DEFAULT();
 static char s_addr[24], s_mask[16], s_aip[24], s_amask[16];
+static uint8_t   s_downCnt = 0;   // consecutive peer-down polls (debounce the reboot)
 static bool      s_inited = false;
 static bool      s_connected = false;
 static bool      s_up = false;
@@ -92,9 +93,14 @@ void wgLoop(uint32_t now) {
   bool up = (esp_wireguardif_peer_is_up(&s_ctx) == ESP_OK);
   if (up && !s_up) log_i("wg: tunnel up");
   s_up = up;
+  if (up) s_downCnt = 0;
+  else if (s_downCnt < 255) s_downCnt++;
 
-  if (!s_up && (now - s_connectedAt) > WG_UP_TIMEOUT_MS) {
-    log_w("wg: peer not up after %lus -> reboot", (unsigned long)(WG_UP_TIMEOUT_MS / 1000));
+  // Reboot only after the bring-up window has passed AND several consecutive down polls,
+  // so a single transient blip after the tunnel was up does not bounce the device.
+  if (!s_up && (now - s_connectedAt) > WG_UP_TIMEOUT_MS && s_downCnt >= 3) {
+    log_w("wg: peer down for %u polls after %lus -> reboot",
+          (unsigned)s_downCnt, (unsigned long)(WG_UP_TIMEOUT_MS / 1000));
     delay(50);
     ESP.restart();
   }

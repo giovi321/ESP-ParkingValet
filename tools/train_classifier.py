@@ -20,7 +20,11 @@ def load_records(path):
             line = line.strip()
             if not line:
                 continue
-            obj = json.loads(line)
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as e:
+                print("warning: skipping malformed JSON line: %s" % e, file=sys.stderr)
+                continue
             for bay in obj.get("bays", []):
                 feat = bay.get("f")
                 if not feat or len(feat) != NFEAT:
