@@ -225,6 +225,14 @@ library) loads into the sensor over SCCB the first time it's used.
 
 ---
 
+## Machine-learning occupancy (optional)
+
+The occupancy decision can run a small model trained on this camera's own data instead of the
+edge-energy threshold — more robust to weather/lighting. See
+[docs/training-the-classifier.md](docs/training-the-classifier.md).
+
+---
+
 ## Configuration reference
 
 Everything here is editable in the UI and saved to NVS. Defaults come from
