@@ -137,6 +137,13 @@ struct Config {
   float    hysteresis;       // fraction; enter=thr*(1+h), exit=thr*(1-h)
   float    baselineEma;      // EMA rate for adaptive empty-baseline (0..1, small); the live ref in relative mode
 
+  // --- Occupancy engine + training capture ---
+  uint8_t occupancyEngine;   // 0 = edge threshold (legacy), 1 = trained classifier
+  bool    trainCapture;      // log per-bay feature vectors + weak labels for training
+  char    captureUrl[200];
+  char    captureAuthHeaderName[48];
+  char    captureAuthHeaderValue[200];   // SECRET
+
   // --- Image / sensor ---
   int  framesize;            // framesize_t value (default SVGA = 9)
   int  jpegQuality;          // 0..63 (lower = better)

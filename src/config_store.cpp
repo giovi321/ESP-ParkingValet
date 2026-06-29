@@ -12,7 +12,8 @@ static bool isSecretKey(const char* k) {
   return !strcmp(k, "staPass") || !strcmp(k, "apPass") ||
          !strcmp(k, "adminPass") || !strcmp(k, "whAuthHeaderValue") ||
          !strcmp(k, "statsAuthHeaderValue") || !strcmp(k, "mqttPass") ||
-         !strcmp(k, "wgPrivateKey") || !strcmp(k, "wgPresharedKey");
+         !strcmp(k, "wgPrivateKey") || !strcmp(k, "wgPresharedKey") ||
+         !strcmp(k, "captureAuthHeaderValue");
 }
 
 // ---- defaults -------------------------------------------------------------
@@ -85,6 +86,12 @@ void configLoadDefaults(Config& c) {
   c.relDelta          = 6.0f;
   c.hysteresis        = 0.25f;
   c.baselineEma       = 0.02f;
+
+  c.occupancyEngine = 0;
+  c.trainCapture = false;
+  setStr(c.captureUrl, sizeof(c.captureUrl), "");
+  setStr(c.captureAuthHeaderName, sizeof(c.captureAuthHeaderName), "");
+  setStr(c.captureAuthHeaderValue, sizeof(c.captureAuthHeaderValue), "");
 
   c.framesize   = 9;     // FRAMESIZE_SVGA (800x600)
   c.jpegQuality = 12;
@@ -170,6 +177,12 @@ static void serializeFull(const Config& c, JsonObject o) {
   o["relDelta"]          = c.relDelta;
   o["hysteresis"]        = c.hysteresis;
   o["baselineEma"]       = c.baselineEma;
+
+  o["occupancyEngine"]       = c.occupancyEngine;
+  o["trainCapture"]          = c.trainCapture;
+  o["captureUrl"]            = c.captureUrl;
+  o["captureAuthHeaderName"] = c.captureAuthHeaderName;
+  o["captureAuthHeaderValue"]= c.captureAuthHeaderValue;
 
   o["framesize"]   = c.framesize;
   o["jpegQuality"] = c.jpegQuality;
@@ -295,6 +308,12 @@ static void parseFull(Config& c, JsonObjectConst o) {
   c.hysteresis        = o["hysteresis"]        | c.hysteresis;
   c.baselineEma       = o["baselineEma"]       | c.baselineEma;
 
+  c.occupancyEngine = o["occupancyEngine"] | c.occupancyEngine;
+  c.trainCapture    = o["trainCapture"]    | c.trainCapture;
+  if (o["captureUrl"].is<const char*>())             setStr(c.captureUrl,             sizeof(c.captureUrl),             o["captureUrl"]);
+  if (o["captureAuthHeaderName"].is<const char*>())  setStr(c.captureAuthHeaderName,  sizeof(c.captureAuthHeaderName),  o["captureAuthHeaderName"]);
+  if (o["captureAuthHeaderValue"].is<const char*>()) setStr(c.captureAuthHeaderValue, sizeof(c.captureAuthHeaderValue), o["captureAuthHeaderValue"]);
+
   c.framesize   = o["framesize"]   | c.framesize;
   c.jpegQuality = o["jpegQuality"] | c.jpegQuality;
   c.vFlip       = o["vFlip"]       | c.vFlip;
@@ -367,6 +386,7 @@ void configToJson(const Config& cfg, JsonObject out, bool includeSecrets) {
     out["mqttPass"] = "";
     out["wgPrivateKey"]   = "";
     out["wgPresharedKey"] = "";
+    out["captureAuthHeaderValue"] = "";
   }
 }
 
