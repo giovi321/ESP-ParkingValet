@@ -1,4 +1,5 @@
 #include "cv.h"
+#include "features.h"
 #include "esp_camera.h"
 #include "img_converters.h"
 #include "esp_heap_caps.h"
@@ -193,8 +194,7 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
     int x1 = constrain((int)ceilf(maxx),  x0 + 1, w - 1);
     int y1 = constrain((int)ceilf(maxy),  y0 + 1, h - 1);
 
-    uint64_t gradSum = 0, intSum = 0;
-    uint32_t cnt = 0;
+    FeatureAccum fa; featureAccumInit(fa);
     for (int y = y0; y < y1; y++) {
       const uint8_t* row = &_luma[y * w];
       const uint8_t* nxt = &_luma[(y + 1) * w];
@@ -207,17 +207,41 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
             inside = !inside;
         }
         if (!inside) continue;
-        int gx = abs((int)row[x + 1] - (int)row[x]);
-        int gy = abs((int)nxt[x]     - (int)row[x]);
-        gradSum += (gx + gy);
-        intSum  += row[x];
-        cnt++;
+        int lum = row[x];
+        int gx = abs((int)row[x + 1] - lum);
+        int gy = abs((int)nxt[x]     - lum);
+        fa.gradSum  += (gx + gy);
+        fa.intSum   += lum;
+        fa.intSqSum += (uint32_t)lum * (uint32_t)lum;
+        fa.cnt++;
+        // uniform LBP(8,1): compare 8 neighbours to centre (guard image borders)
+        if (x > 0 && x < w - 1 && y > 0 && y < h - 1) {
+          const uint8_t* r0 = &_luma[(y - 1) * w];
+          uint8_t c = (uint8_t)lum;
+          uint8_t code =
+            ((r0[x - 1] >= c) << 7) | ((r0[x] >= c) << 6) | ((r0[x + 1] >= c) << 5) |
+            ((row[x + 1] >= c) << 4) | ((nxt[x + 1] >= c) << 3) | ((nxt[x] >= c) << 2) |
+            ((nxt[x - 1] >= c) << 1) | ((row[x - 1] >= c) << 0);
+          uint8_t rot = (uint8_t)((code << 1) | (code >> 7));
+          int trans = __builtin_popcount((unsigned)(code ^ rot));
+          if (trans <= 2) fa.lbp[__builtin_popcount((unsigned)code)]++;  // uniform -> bin by set-bits 0..8
+          else            fa.lbp[9]++;                                    // non-uniform
+        }
+        // colour from the matching RGB565 pixel
+        uint16_t cpx = px[y * w + x];
+        int cr = ((cpx >> 11) & 0x1F) << 3, cg = ((cpx >> 5) & 0x3F) << 2, cb = (cpx & 0x1F) << 3;
+        int mx = cr > cg ? (cr > cb ? cr : cb) : (cg > cb ? cg : cb);
+        int mn = cr < cg ? (cr < cb ? cr : cb) : (cg < cb ? cg : cb);
+        fa.satSum_x1000 += mx ? (int64_t)(mx - mn) * 1000 / mx : 0;
+        fa.brSum += (cb - cr);
       }
     }
-    float edge  = cnt ? (float)gradSum / (float)cnt : 0.0f;
-    float meanI = cnt ? (float)intSum  / (float)cnt : 0.0f;
+    float edge  = fa.cnt ? (float)fa.gradSum / (float)fa.cnt : 0.0f;
+    float meanI = fa.cnt ? (float)fa.intSum  / (float)fa.cnt : 0.0f;
     sr.edge = edge; sr.meanI = meanI;
     _lastEdge[i] = edge;   // remembered for markOccupied()'s re-base math
+    featuresFinalize(fa, _baselineEdge[i], sr.feat);
+    sr.clfScore = -1.0f;
 
     if (!roi.enabled) {
       // Keep geometry but do not count; report instantaneous values only.

@@ -20,6 +20,8 @@ struct SlotResult {
   float meanI;         // current mean intensity (0..255)
   float baselineEdge;  // adaptive EMA of edge energy while empty (diagnostic)
   float threshold;     // effective threshold used for this slot
+  float feat[16];      // CLF_NFEAT feature vector (see features.h); filled every analyze()
+  float clfScore;      // classifier occupied probability [0,1], or -1 if not computed
   bool  occupied;      // committed occupancy
   bool  rawOccupied;   // instantaneous (pre-debounce) decision
 };
