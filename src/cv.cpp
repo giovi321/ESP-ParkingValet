@@ -1,5 +1,6 @@
 #include "cv.h"
 #include "features.h"
+#include "clf.h"
 #include "esp_camera.h"
 #include "img_converters.h"
 #include "esp_heap_caps.h"
@@ -257,13 +258,25 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
     // correct from boot if that matters.
     if (relative && !_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; }
 
-    // Occupancy metric: absolute edge, or its rise above the empty baseline.
-    float metric = relative ? (edge - _baselineEdge[i]) : edge;
+    // Classifier score whenever a model is embedded — cheap (a few ops). It drives the
+    // decision when the classifier engine is selected, and otherwise serves as a live
+    // disagreement monitor against the edge engine in the UI.
+    sr.clfScore = clfAvailable() ? clfScore(sr.feat) : -1.0f;
 
-    // Hysteresis around the effective threshold/delta.
-    float enter = sr.threshold * (1.0f + hys);
-    float exit  = sr.threshold * (1.0f - hys);
-    bool raw = _committed[i] ? (metric >= exit) : (metric > enter);
+    bool raw;
+    if (_cfg->occupancyEngine == 1 && sr.clfScore >= 0.0f) {
+      // Probability hysteresis around 0.5 (same `hys` fraction as the edge band).
+      float p = sr.clfScore;
+      float pen = 0.5f + hys * 0.5f;   // enter-occupied threshold
+      float pex = 0.5f - hys * 0.5f;   // exit-occupied threshold
+      raw = _committed[i] ? (p >= pex) : (p > pen);
+    } else {
+      // Legacy edge engine: absolute edge, or its rise above the empty baseline.
+      float metric = relative ? (edge - _baselineEdge[i]) : edge;
+      float enter = sr.threshold * (1.0f + hys);
+      float exit  = sr.threshold * (1.0f - hys);
+      raw = _committed[i] ? (metric >= exit) : (metric > enter);
+    }
     sr.rawOccupied = raw;
 
     // Debounce: require the raw decision to persist before committing.
