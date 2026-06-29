@@ -235,6 +235,7 @@ Everything here is editable in the UI and saved to NVS. Defaults come from
 | WiFi | `staSsid` / `staPass` | — | Your network. Saving reboots to reconnect. |
 | | `apSsid` / `apPass` | `ESP-ParkingValet-Setup` / `parking1234` | Setup hotspot (WPA2, password at least 8 chars). |
 | | `hostname` | `esp-parkingvalet` | mDNS/DHCP hostname. |
+| | `apRetryMin` | `0` | While in AP fallback (a join failed), re-attempt the saved WiFi every this many minutes; switches back to STA once it reconnects, otherwise stays in AP and keeps looping. The setup hotspot is briefly unreachable during each attempt. For this soft retry to run before a hard reboot, set it shorter than `offlineRebootMin`. 0 is off. |
 | | `offlineRebootMin` | `0` | Reboot if WiFi stays down this many minutes (0 is off). Keeps retrying until back online. |
 | Web auth | `adminUser` / `adminPass` | `admin` / `parking` | Digest auth in STA mode. Change it on first login. |
 | Webhook | `whEnabled` | `false` | Master on/off for sending. |

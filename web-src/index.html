@@ -345,10 +345,12 @@
     </div>
     <div class="card">
       <h2>Connectivity watchdog</h2>
+      <label>Retry WiFi from AP mode every (minutes · 0 = off)</label>
+      <input type="number" id="c_apRetryMin" min="0" max="1440" step="1">
       <label>Auto-reboot if offline for (minutes · 0 = off)</label>
       <input type="number" id="c_offlineRebootMin" min="0" max="1440" step="1">
       <div class="btns"><button class="btn" id="saveWatchdog">Save</button></div>
-      <div class="hint">If the device loses its WiFi connection for this many minutes it reboots to recover, and keeps retrying until it's back online. 0 disables it.</div>
+      <div class="hint">If a WiFi join fails the device falls back to this AP for setup. With <b>retry</b> set, it re-attempts the saved WiFi every N minutes and switches back to STA once it reconnects — staying in AP (and looping) until then; this hotspot is briefly unreachable during each attempt. <b>Auto-reboot</b> reboots after the device has been offline this long, as a last-resort recovery — set retry shorter than auto-reboot for it to run first. Either or both; 0 disables.</div>
     </div>
     <div class="card">
       <h2>Admin password</h2>
@@ -414,7 +416,7 @@ const F = ["occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma"
   "spoolMode","spoolMaxEntries","spoolMaxKB","spoolBackend",
   "statsEnabled","statsUrl","statsIntervalS","statsAuthHeaderName","statsAuthHeaderValue","statsTlsInsecure",
   "mqttEnabled","mqttHost","mqttPort","mqttTls","mqttTlsInsecure","mqttUser","mqttPass","mqttBaseTopic","mqttDiscovery","mqttDiscoveryPrefix","mqttIntervalS",
-  "staSsid","staPass","hostname","offlineRebootMin","apSsid","apPass",
+  "staSsid","staPass","hostname","offlineRebootMin","apRetryMin","apSsid","apPass",
   "framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode","tzOffsetMin",
   "adminUser","adminPass"];
 const SECRET = ["whAuthHeaderValue","statsAuthHeaderValue","mqttPass","staPass","apPass","adminPass"];
@@ -481,7 +483,7 @@ $("#slotTable").addEventListener("click",async(e)=>{ const b=e.target.closest("b
   try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"mark_occupied",slot:i})}); toast(`"${name}" marked occupied`);}catch(err){toast("Mark occupied failed",true);} });
 $("#saveAdmin").onclick=()=>save(["adminUser","adminPass"]);
 $("#saveWifi").onclick=()=>save(["staSsid","staPass","hostname","apSsid","apPass"]);
-$("#saveWatchdog").onclick=()=>save(["offlineRebootMin"]);
+$("#saveWatchdog").onclick=()=>save(["offlineRebootMin","apRetryMin"]);
 
 $("#testWebhook").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_webhook"})}); toast(r.ok?("Test sent · HTTP "+r.code):("Test failed · "+r.code),!r.ok);}catch(e){toast("Test failed",true);} };
 

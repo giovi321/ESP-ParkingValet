@@ -13,6 +13,7 @@ static DNSServer s_dns;
 static uint32_t  s_lastReconnect = 0;
 static bool      s_apFromFailure = false;   // AP entered as a fallback from a failed join
 static uint32_t  s_offlineSince  = 0;       // millis() since we went offline (0 = online)
+static uint32_t  s_lastApRetry   = 0;       // millis() of the last/scheduled STA re-join while in AP fallback (0 = arm on next loop)
 
 static const char* MP_BOUNDARY = "----ParkingCamBoundary7f3a91c4";
 
@@ -42,9 +43,11 @@ bool netStartSTA(uint32_t timeoutMs) {
   return false;
 }
 
-void netStartAP(bool fromFailure) {
-  s_apFromFailure = fromFailure;
-  s_offlineSince = 0;
+// Bring up the SoftAP + captive-portal DNS (RF/mode/DNS only, no watchdog-clock
+// bookkeeping) so it can be reused both for a fresh entry and to restore the AP
+// after an unsuccessful retry without disturbing the offline-reboot clock.
+static void apBringUp() {
+  s_dns.stop();                    // clean re-bind if we're re-entering AP after a retry
   WiFi.mode(WIFI_AP);
   const char* pass = (strlen(s_cfg->apPass) >= 8) ? s_cfg->apPass : nullptr; // open if too short
   WiFi.softAP(s_cfg->apSsid, pass);
@@ -52,6 +55,13 @@ void netStartAP(bool fromFailure) {
   s_dns.start(53, "*", ip);        // captive portal: resolve everything to us
   s_mode = NET_AP;
   log_i("AP mode: ssid='%s' ip=%s", s_cfg->apSsid, ip.toString().c_str());
+}
+
+void netStartAP(bool fromFailure) {
+  s_apFromFailure = fromFailure;
+  s_offlineSince  = 0;
+  s_lastApRetry   = 0;
+  apBringUp();
 }
 
 // Reboot the device if it has been offline for offlineRebootMin minutes (0=off).
@@ -65,11 +75,40 @@ static void offlineWatchdog(uint32_t now) {
   }
 }
 
+// While sitting in AP fallback (a station join failed), re-attempt the saved
+// WiFi every apRetryMin minutes (0=off) without rebooting. On success we promote
+// to STA; on failure we restore the AP + captive portal and wait another
+// interval. The offline-reboot clock keeps counting across failed retries (this
+// restores the AP via apBringUp, not netStartAP), so offlineRebootMin still fires
+// as a last-resort backstop if both are configured.
+static void apRetryWatchdog(uint32_t now) {
+  if (!s_cfg || s_cfg->apRetryMin == 0 || !s_cfg->staSsid[0]) return;
+  if (s_lastApRetry == 0) { s_lastApRetry = now; return; }            // arm the clock on AP entry
+  if (now - s_lastApRetry < (uint32_t)s_cfg->apRetryMin * 60000UL) return;
+
+  log_i("AP fallback: retrying join to '%s'", s_cfg->staSsid);
+  // Use the boot join timeout so a marginal network that needs the full window
+  // still reconnects here. netStartSTA flips the radio to WIFI_STA, so the setup
+  // hotspot/captive portal is briefly unreachable for the duration of the attempt.
+  if (netStartSTA()) {                // on success s_mode is now NET_STA
+    s_dns.stop();                     // captive-portal DNS no longer needed
+    s_offlineSince = 0;               // online now — clear the offline-reboot clock immediately
+    log_i("AP fallback: join succeeded -> online");
+    return;
+  }
+  log_w("AP fallback: join failed -> staying in AP, will retry");
+  apBringUp();                        // restore AP + portal (leaves the offline-reboot clock intact)
+  s_lastApRetry = millis();           // schedule the next retry a full interval after this attempt
+}
+
 void netLoop() {
   uint32_t now = millis();
   if (s_mode == NET_AP) {
     s_dns.processNextRequest();
-    if (s_apFromFailure) offlineWatchdog(now);   // join failed -> keep retrying the real WiFi
+    if (s_apFromFailure) {
+      apRetryWatchdog(now);                       // soft recovery: re-attempt the real WiFi in a loop
+      if (s_mode == NET_AP) offlineWatchdog(now); // hard backstop: reboot if still offline too long
+    }
     return;
   }
   if (s_mode == NET_STA) {

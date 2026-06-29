@@ -26,6 +26,7 @@ void configLoadDefaults(Config& c) {
   setStr(c.apPass,   sizeof(c.apPass),   DEFAULT_AP_PASS);
   setStr(c.hostname, sizeof(c.hostname), DEFAULT_HOSTNAME);
   c.offlineRebootMin = 0;
+  c.apRetryMin = 0;
 
   setStr(c.adminUser, sizeof(c.adminUser), DEFAULT_ADMIN_USER);
   setStr(c.adminPass, sizeof(c.adminPass), DEFAULT_ADMIN_PASS);
@@ -100,6 +101,7 @@ static void serializeFull(const Config& c, JsonObject o) {
   o["apPass"]   = c.apPass;
   o["hostname"] = c.hostname;
   o["offlineRebootMin"] = c.offlineRebootMin;
+  o["apRetryMin"]       = c.apRetryMin;
 
   o["adminUser"]      = c.adminUser;
   o["adminPass"]      = c.adminPass;
@@ -213,6 +215,7 @@ static void parseFull(Config& c, JsonObjectConst o) {
   if (o["apPass"].is<const char*>())   setStr(c.apPass,   sizeof(c.apPass),   o["apPass"]);
   if (o["hostname"].is<const char*>()) setStr(c.hostname, sizeof(c.hostname), o["hostname"]);
   c.offlineRebootMin = o["offlineRebootMin"] | c.offlineRebootMin;
+  c.apRetryMin       = o["apRetryMin"]       | c.apRetryMin;
 
   if (o["adminUser"].is<const char*>()) setStr(c.adminUser, sizeof(c.adminUser), o["adminUser"]);
   if (o["adminPass"].is<const char*>()) setStr(c.adminPass, sizeof(c.adminPass), o["adminPass"]);

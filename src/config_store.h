@@ -70,6 +70,7 @@ struct Config {
   char apPass[65];
   char hostname[33];
   uint16_t offlineRebootMin; // auto-reboot if WiFi stays offline this many minutes (0 = off)
+  uint16_t apRetryMin;       // while in AP fallback (join failed), re-attempt the saved WiFi every N minutes (0 = off)
 
   // --- Web auth ---
   char adminUser[33];
