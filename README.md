@@ -237,6 +237,12 @@ Everything here is editable in the UI and saved to NVS. Defaults come from
 | | `hostname` | `esp-parkingvalet` | mDNS/DHCP hostname. |
 | | `apRetryMin` | `0` | While in AP fallback (a join failed), re-attempt the saved WiFi every this many minutes; switches back to STA once it reconnects, otherwise stays in AP and keeps looping. The setup hotspot is briefly unreachable during each attempt. For this soft retry to run before a hard reboot, set it shorter than `offlineRebootMin`. 0 is off. |
 | | `offlineRebootMin` | `0` | Reboot if WiFi stays down this many minutes (0 is off). Keeps retrying until back online. |
+| | `wgEnabled` | `false` | Join a WireGuard VPN so the device is reachable remotely (web UI/OTA on the tunnel IP). |
+| | `wgPrivateKey` / `wgPresharedKey` | — | Device WireGuard keys (secret; masked over the API). Preshared key is optional. |
+| | `wgAddress` | — | Device tunnel IP, e.g. `10.6.0.7` (a `/32` suffix is accepted). |
+| | `wgPeerPublicKey` / `wgEndpointHost` / `wgEndpointPort` | — / — / `51820` | The homelab WireGuard server's public key and host:port. |
+| | `wgAllowedIps` | — | Subnet routed through the tunnel, e.g. `10.6.0.0/24`. |
+| | `wgKeepalive` | `25` | Persistent-keepalive seconds (holds the NAT mapping open; 0 = off). |
 | Web auth | `adminUser` / `adminPass` | `admin` / `parking` | Digest auth in STA mode. Change it on first login. |
 | Webhook | `whEnabled` | `false` | Master on/off for sending. |
 | | `whUrl` | — | Full URL (http or https). |
@@ -278,6 +284,26 @@ Everything here is editable in the UI and saved to NVS. Defaults come from
 | ROI (per bay) | `points` | — | Polygon vertices (3 to 8), each normalized 0 to 1. |
 | | `threshold` | `0` | Per-bay override (0 uses the global one). |
 | | `enabled` | `true` | Disabled bays show on screen but don't count. |
+
+### Remote access (WireGuard)
+
+The device can join your homelab WireGuard network as an outbound client so the web UI and
+OTA are reachable from anywhere on that VPN — no port-forwarding, nothing exposed publicly.
+
+1. Generate a keypair for the device (`wg genkey | tee privatekey | wg pubkey`).
+2. On your WireGuard **server**, add the device as a peer: its public key, and **its tunnel
+   IP in that peer's `AllowedIPs`** (e.g. `10.6.0.7/32`). Without this the tunnel connects but
+   return traffic never reaches the device, so the UI stays unreachable.
+3. In the device UI (WireGuard card): set Private key, Address (the device tunnel IP), Peer
+   public key, Endpoint host/port (the server), Allowed IPs (the homelab subnet, e.g.
+   `10.6.0.0/24`), and Keepalive 25. Tick Enable and Save.
+4. The tunnel comes up only after the device's clock is NTP-synced. Then reach the device at
+   its tunnel IP.
+
+**Security note:** the WireGuard private key is stored in NVS in plaintext unless flash
+encryption is enabled — recoverable by anyone with physical access to the flash chip. Give
+the device a narrowly-scoped peer (limit what its key can reach on the server side), and
+enable flash encryption if at-rest protection matters.
 
 ---
 
