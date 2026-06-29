@@ -18,6 +18,7 @@
 #include "spool.h"
 #include "logbuf.h"
 #include "wg.h"
+#include "capture.h"
 
 #if defined(__has_include)
 #  if __has_include("build_info.h")
@@ -355,6 +356,7 @@ void loop() {
       CvResult r;
       if (cvEngine.analyze(fb->buf, fb->len, fb->width, fb->height, r)) {
         lastResult = r;
+        captureMaybeLog(cfg, r);
         if (!netIsAP()) maybeSend(fb, r);   // only act on triggers when on the real network
         if (r.valid && r.count != lastMqttCount) { lastMqttCount = r.count; mqttPublishNow(); }
       }
