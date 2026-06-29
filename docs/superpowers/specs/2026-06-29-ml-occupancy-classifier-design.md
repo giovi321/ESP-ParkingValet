@@ -150,26 +150,47 @@ prints the on-device feature/weight summary. Retraining = rerun the script + OTA
 ### 6. Remote access (WireGuard client)
 
 So the training loop can be driven remotely, the device joins the homelab WireGuard
-network as an outbound peer; once the tunnel is up, the existing web server + OTA are
-reachable on the device's tunnel IP (lwIP listens on all interfaces — no per-interface
-binding needed). **Library/footprint/lifecycle details are being verified against the exact
-Arduino-ESP32 2.0.17 / `espressif32@6.9.0` toolchain by a background feasibility check;
-this section will be reconciled with its findings.** Working assumptions:
+network as an outbound peer; once the tunnel is up, the existing web server + OTA answer on
+the device's tunnel IP (lwIP binds `INADDR_ANY` — no per-interface binding needed).
+Feasibility was **confirmed** against the Arduino-ESP32 2.0.17 / IDF 4.4 toolchain
+(verdict: feasible-with-caveats; ESPHome ships WireGuard on this same core).
 
-- **Role:** device = WireGuard *client* dialing OUT to the homelab WG endpoint (the device
-  is behind NAT and initiates the tunnel). Persistent-keepalive keeps the NAT mapping open.
-- **Lifecycle:** bring the tunnel up only in STA mode, **after** WiFi is connected **and**
-  NTP has synced (WG handshakes use TAI64N timestamps and fail with a wrong clock). Tear
-  down / re-establish on WiFi drop+reconnect. WG is irrelevant in AP fallback mode.
-- **Config (NVS; private + preshared keys are secrets, masked in the API like other
-  credentials):** `wgEnabled` (bool), `wgPrivateKey` (device, secret), `wgPeerPublicKey`
-  (server), `wgEndpointHost`, `wgEndpointPort`, `wgLocalIp` (device address inside the
-  tunnel), optional `wgPresharedKey` (secret) and `wgKeepalive` (seconds). The
-  config-store already documents that NVS secrets are plaintext unless flash encryption is
-  enabled — the WG private key inherits that caveat.
-- **Scope note:** this is a self-contained firmware capability (new `wg.*` module + config
-  + a small UI card). It is orthogonal to the classifier and can land before, after, or
-  alongside it; it is grouped here because the user requires it for *remote* training.
+- **Library:** `droscy/esp_wireguard@0.4.5` (PlatformIO `lib_deps`). The maintained fork of
+  `trombik/esp_wireguard` — the one ESPHome compiles — with preshared-key + persistent-
+  keepalive support, using the **stock lwIP** via a `wireguardif` netif (no patched lwIP),
+  event-driven (no per-loop poll for the data path: `esp_wireguard_init` →
+  `esp_wireguard_connect` → poll `esp_wireguardif_peer_is_up`). One validation step: confirm
+  its `esphome/libsodium` dependency resolves in a plain (non-ESPHome) PlatformIO build, and
+  do a build-size + on-device free-internal-heap smoke test (no published footprint number).
+  **Not** `ciniml/WireGuard-ESP32` — unmaintained since 2022, no PSK, open crash-on-reconnect
+  bug (#51).
+- **Role:** device = WireGuard *client* dialing OUT to the homelab endpoint (behind NAT, no
+  device-side port-forward). Set **PersistentKeepalive = 25 s** to hold the NAT mapping open.
+- **Lifecycle (folds into the existing watchdogs):**
+  1. WiFi STA connect (existing) → camera init (existing).
+  2. **Gate on NTP:** do **not** connect the tunnel until the wall clock is valid (e.g.
+     epoch > 2023). The WG handshake carries a TAI64N timestamp the server tracks per-peer;
+     a device that dials up at 1970-time after a reboot is rejected as a replay until its
+     clock catches up. The device already runs NTP — add the gate.
+  3. `esp_wireguard_init` + `connect` **once**, keepalive 25. Web server/OTA become
+     reachable on the tunnel IP once the tunnel is up.
+  4. Maintain: nothing per-loop (lwIP services the timers); optionally poll
+     `esp_wireguardif_peer_is_up()` on a slow cadence to surface tunnel state in the UI/MQTT.
+  5. On WiFi drop/reconnect: re-establish **once** after WiFi + clock are back; if the peer
+     doesn't come up within a timeout, **reboot** rather than churn connect/disconnect
+     (avoids the library's teardown race). Tie into the existing offline/hang watchdogs.
+- **Config (NVS; 🔑 = secret, masked in the API like other credentials):** `wgEnabled`,
+  `wgPrivateKey` 🔑, `wgAddress` (device tunnel IP, e.g. `10.x.x.x/32`), `wgPeerPublicKey`,
+  `wgEndpointHost`, `wgEndpointPort`, `wgAllowedIps` (what to route, e.g. `10.x.x.0/24`),
+  optional `wgPresharedKey` 🔑 and `wgKeepalive` (default 25).
+- **Server-side counterpart (must document for the user):** the homelab WG server's peer
+  entry for this device MUST include the device's tunnel IP in its `AllowedIPs`, or return
+  packets never enter the tunnel and the web UI is unreachable despite a "connected" status.
+- **Scope note:** self-contained firmware capability (new `wg.*` module + config + a small
+  UI card), orthogonal to the classifier; can land before/after/with it. Grouped here
+  because the user requires it for *remote* training. For control-plane use (web UI / OTA /
+  config) the CPU cost is negligible; streaming live video *through* the tunnel would be
+  marginal (software AEAD ~3 MB/s on the LX6) and is out of scope.
 
 ## Data flow & error handling
 
@@ -235,8 +256,14 @@ on hard cases is unacceptable.**
   to Phase 2 (CNN). The dataset built in Phase 1 carries over.
 - **Capture-mode load** — POSTing features + snapshots adds traffic while enabled; it is
   off by default and only used during collection.
-- **WireGuard on this toolchain** — library maturity for Arduino-ESP32 2.0.17 / IDF 4.4
-  and coexistence with esp32-camera must be confirmed (background check in progress); the
-  tunnel depends on NTP being synced first; and the WG private key sits in NVS plaintext
-  unless flash encryption is enabled.
+- **WireGuard internal-SRAM pressure** — WG peer state is malloc-free/static and **cannot
+  live in PSRAM**; it shares internal SRAM with WiFi + the camera driver. This is the one
+  number to verify empirically: measure free internal heap before/after `connect()`
+  on-device. (Flash cost ~40–70 KB is a non-issue against the headroom.)
+- **WireGuard reconnect & routing** — prefer reboot-on-failure over `connect`/`disconnect`
+  churn (teardown race); and the server peer's `AllowedIPs` must include the device's tunnel
+  IP or the UI is unreachable despite a live tunnel.
+- **WireGuard key at rest** — the WG private key sits in NVS plaintext (recoverable via
+  `esptool read-flash`) unless flash encryption is enabled; scope the device's server-side
+  `AllowedIPs` narrowly so a key compromise is contained.
 ```
