@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-static const int CLF_NFEAT = 16;
+#define CLF_NFEAT 16
 
 // Accumulated over a bay's in-polygon pixels in one pass (see cv.cpp).
 struct FeatureAccum {
