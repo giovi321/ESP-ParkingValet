@@ -11,7 +11,8 @@ static void setStr(char* dst, size_t cap, const char* src) {
 static bool isSecretKey(const char* k) {
   return !strcmp(k, "staPass") || !strcmp(k, "apPass") ||
          !strcmp(k, "adminPass") || !strcmp(k, "whAuthHeaderValue") ||
-         !strcmp(k, "statsAuthHeaderValue") || !strcmp(k, "mqttPass");
+         !strcmp(k, "statsAuthHeaderValue") || !strcmp(k, "mqttPass") ||
+         !strcmp(k, "wgPrivateKey") || !strcmp(k, "wgPresharedKey");
 }
 
 // ---- defaults -------------------------------------------------------------
@@ -27,6 +28,16 @@ void configLoadDefaults(Config& c) {
   setStr(c.hostname, sizeof(c.hostname), DEFAULT_HOSTNAME);
   c.offlineRebootMin = 0;
   c.apRetryMin = 0;
+
+  c.wgEnabled = false;
+  setStr(c.wgPrivateKey,    sizeof(c.wgPrivateKey),    "");
+  setStr(c.wgAddress,       sizeof(c.wgAddress),       "");
+  setStr(c.wgPeerPublicKey, sizeof(c.wgPeerPublicKey), "");
+  setStr(c.wgEndpointHost,  sizeof(c.wgEndpointHost),  "");
+  c.wgEndpointPort = 51820;
+  setStr(c.wgAllowedIps,    sizeof(c.wgAllowedIps),    "");
+  setStr(c.wgPresharedKey,  sizeof(c.wgPresharedKey),  "");
+  c.wgKeepalive = 25;
 
   setStr(c.adminUser, sizeof(c.adminUser), DEFAULT_ADMIN_USER);
   setStr(c.adminPass, sizeof(c.adminPass), DEFAULT_ADMIN_PASS);
@@ -102,6 +113,16 @@ static void serializeFull(const Config& c, JsonObject o) {
   o["hostname"] = c.hostname;
   o["offlineRebootMin"] = c.offlineRebootMin;
   o["apRetryMin"]       = c.apRetryMin;
+
+  o["wgEnabled"]       = c.wgEnabled;
+  o["wgPrivateKey"]    = c.wgPrivateKey;
+  o["wgAddress"]       = c.wgAddress;
+  o["wgPeerPublicKey"] = c.wgPeerPublicKey;
+  o["wgEndpointHost"]  = c.wgEndpointHost;
+  o["wgEndpointPort"]  = c.wgEndpointPort;
+  o["wgAllowedIps"]    = c.wgAllowedIps;
+  o["wgPresharedKey"]  = c.wgPresharedKey;
+  o["wgKeepalive"]     = c.wgKeepalive;
 
   o["adminUser"]      = c.adminUser;
   o["adminPass"]      = c.adminPass;
@@ -216,6 +237,16 @@ static void parseFull(Config& c, JsonObjectConst o) {
   if (o["hostname"].is<const char*>()) setStr(c.hostname, sizeof(c.hostname), o["hostname"]);
   c.offlineRebootMin = o["offlineRebootMin"] | c.offlineRebootMin;
   c.apRetryMin       = o["apRetryMin"]       | c.apRetryMin;
+
+  c.wgEnabled = o["wgEnabled"] | c.wgEnabled;
+  if (o["wgPrivateKey"].is<const char*>())    setStr(c.wgPrivateKey,    sizeof(c.wgPrivateKey),    o["wgPrivateKey"]);
+  if (o["wgAddress"].is<const char*>())       setStr(c.wgAddress,       sizeof(c.wgAddress),       o["wgAddress"]);
+  if (o["wgPeerPublicKey"].is<const char*>()) setStr(c.wgPeerPublicKey, sizeof(c.wgPeerPublicKey), o["wgPeerPublicKey"]);
+  if (o["wgEndpointHost"].is<const char*>())  setStr(c.wgEndpointHost,  sizeof(c.wgEndpointHost),  o["wgEndpointHost"]);
+  c.wgEndpointPort = o["wgEndpointPort"] | c.wgEndpointPort;
+  if (o["wgAllowedIps"].is<const char*>())    setStr(c.wgAllowedIps,    sizeof(c.wgAllowedIps),    o["wgAllowedIps"]);
+  if (o["wgPresharedKey"].is<const char*>())  setStr(c.wgPresharedKey,  sizeof(c.wgPresharedKey),  o["wgPresharedKey"]);
+  c.wgKeepalive = o["wgKeepalive"] | c.wgKeepalive;
 
   if (o["adminUser"].is<const char*>()) setStr(c.adminUser, sizeof(c.adminUser), o["adminUser"]);
   if (o["adminPass"].is<const char*>()) setStr(c.adminPass, sizeof(c.adminPass), o["adminPass"]);
@@ -334,6 +365,8 @@ void configToJson(const Config& cfg, JsonObject out, bool includeSecrets) {
     out["whAuthHeaderValue"] = "";
     out["statsAuthHeaderValue"] = "";
     out["mqttPass"] = "";
+    out["wgPrivateKey"]   = "";
+    out["wgPresharedKey"] = "";
   }
 }
 

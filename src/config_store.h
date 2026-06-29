@@ -72,6 +72,17 @@ struct Config {
   uint16_t offlineRebootMin; // auto-reboot if WiFi stays offline this many minutes (0 = off)
   uint16_t apRetryMin;       // while in AP fallback (join failed), re-attempt the saved WiFi every N minutes (0 = off)
 
+  // --- WireGuard (remote access; optional) ---
+  bool     wgEnabled;
+  char     wgPrivateKey[48];     // base64 X25519 (44 chars) — SECRET
+  char     wgAddress[24];        // device tunnel IP, e.g. "10.6.0.7/32"
+  char     wgPeerPublicKey[48];  // server public key, base64
+  char     wgEndpointHost[64];
+  uint16_t wgEndpointPort;
+  char     wgAllowedIps[24];     // e.g. "10.6.0.0/24" or "0.0.0.0/0"
+  char     wgPresharedKey[48];   // optional, base64 — SECRET
+  uint16_t wgKeepalive;          // persistent-keepalive seconds (0 = off; default 25)
+
   // --- Web auth ---
   char adminUser[33];
   char adminPass[65];
