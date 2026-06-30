@@ -33,10 +33,19 @@ NetMode  netMode();
 bool     netIsAP();
 NetStatus netGetStatus();
 
+// Occupancy payload carried by both live sends and spool replay.
+struct CurbEvent {
+  float freeCurbM;
+  int   estSpaces;
+  int   prevSpaces;         // previous est_free_spaces (the change trigger)
+  bool  canFit;
+  float reliableRangeM;
+  float occupiedFraction;
+};
+
 // Build and POST the webhook event (multipart/form-data with the fields and,
 // when jpg/jpgLen are given, the JPEG image part — pass jpg=nullptr/jpgLen=0 to
-// omit it for a count-only event). `event` is e.g. "count_changed"/"heartbeat";
-// `slots` is per-ROI occupancy.
+// omit it for a count-only event). `event` is e.g. "count_changed"/"heartbeat".
 //
 // For replayed (spooled) events, pass the original capture time via origTs
 // (UTC epoch) / origIso (ISO8601) and queued=true so the receiver can tell a
@@ -46,8 +55,7 @@ NetStatus netGetStatus();
 // Returns the HTTP status code (>0 ok), or a negative error.
 int netSendEvent(const Config& cfg, const char* event,
                  const uint8_t* jpg, size_t jpgLen,
-                 int count, int prevCount,
-                 const bool* slots, int nSlots,
+                 const CurbEvent& ev,
                  uint32_t origTs = 0, const char* origIso = nullptr,
                  bool queued = false, uint32_t queuedAgeS = 0);
 

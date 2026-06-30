@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include "config_store.h"
+#include "net.h"   // CurbEvent
 
 // ---------------------------------------------------------------------------
 // Offline spool: store-and-forward queue for count-change webhook events.
@@ -37,7 +38,7 @@ void spoolArm();
 // stored too; in SPOOL_COUNT mode the image is ignored. Enforces the caps,
 // dropping the oldest entries as needed. No-op when the spool is off.
 void spoolEnqueue(const char* event, const uint8_t* jpg, size_t jpgLen,
-                  int count, int prevCount, const bool* slots, int nSlots);
+                  const CurbEvent& ev);
 
 // Deliver the oldest queued event if the link is up and the webhook is
 // configured. Call from loop(): sends at most one entry per call, throttled by

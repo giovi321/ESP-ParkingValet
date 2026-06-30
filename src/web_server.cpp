@@ -274,14 +274,17 @@ static void handleAction() {
   } else if (!strcmp(action, "test_webhook")) {
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) { server.send(503, "application/json", "{\"ok\":false,\"err\":\"no frame\"}"); return; }
-    // TODO(T6-T10): full curb repoint - replace slots with curb fields in Task C3.4
-    bool slots[MAX_CELLS];
-    int n = g_last->valid ? g_last->nCells : 0;
-    for (int i = 0; i < n && i < MAX_CELLS; i++) slots[i] = g_last->cells[i].occupied;
-    int count = g_last->valid ? g_last->est_free_spaces : 0;
-    int code = netSendEvent(*g_cfg, "test", fb->buf, fb->len, count, count, slots, n);
+    CurbEvent ev = {
+      g_last->valid ? g_last->free_curb_m       : 0.0f,
+      g_last->valid ? g_last->est_free_spaces    : 0,
+      g_last->valid ? g_last->est_free_spaces    : 0,   // prevSpaces = same for test
+      g_last->valid && g_last->can_fit,
+      g_last->valid ? g_last->reliable_range_m  : 0.0f,
+      g_last->valid ? g_last->occupied_fraction : 0.0f
+    };
+    int code = netSendEvent(*g_cfg, "test", fb->buf, fb->len, ev);
     esp_camera_fb_return(fb);
-    webNoteSend("test", count, code);
+    webNoteSend("test", ev.estSpaces, code);
     JsonDocument r; r["ok"] = (code > 0 && code < 400); r["code"] = code;
     String out; serializeJson(r, out);
     server.send(200, "application/json", out);

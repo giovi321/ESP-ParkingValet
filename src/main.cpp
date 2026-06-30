@@ -153,11 +153,9 @@ static bool shouldSend(int prev, int count) {
 }
 
 static int postEvent(const char* event, camera_fb_t* fb, const CurbResult& r, int count, int prev) {
-  // TODO(T6-T10): full curb repoint - replace count/slots with curb fields in Task C3.4
-  bool slots[MAX_CELLS];
-  for (int i = 0; i < r.nCells && i < MAX_CELLS; i++) slots[i] = r.cells[i].occupied;
-  int code = netSendEvent(cfg, event, fb->buf, fb->len, count, prev, slots, r.nCells);  // live -> queued=false
-  webNoteSend(event, count, code);
+  CurbEvent ev = {r.free_curb_m, r.est_free_spaces, prev, r.can_fit, r.reliable_range_m, r.occupied_fraction};
+  int code = netSendEvent(cfg, event, fb->buf, fb->len, ev);  // live -> queued=false
+  webNoteSend(event, ev.estSpaces, code);
   lastSendMs = millis();
   return code;
 }
@@ -186,9 +184,7 @@ static void maybeSend(camera_fb_t* fb, const CurbResult& r) {
   // case. Fall back to the durable spool only when offline, when a backlog is
   // still draining (so we stay in order behind it), or when the live POST fails.
   if (cfg.spoolMode != SPOOL_OFF) {
-    // TODO(T6-T10): full curb repoint - replace slots with curb fields in Task C3.4
-    bool slots[MAX_CELLS];
-    for (int i = 0; i < r.nCells && i < MAX_CELLS; i++) slots[i] = r.cells[i].occupied;
+    CurbEvent ev = {r.free_curb_m, r.est_free_spaces, lastSentCount, r.can_fit, r.reliable_range_m, r.occupied_fraction};
     uint32_t qCount, qBytes; spoolStats(qCount, qBytes);
     bool sentLive = false;
     if (WiFi.status() == WL_CONNECTED && qCount == 0) {
@@ -196,7 +192,7 @@ static void maybeSend(camera_fb_t* fb, const CurbResult& r) {
       sentLive = (code >= 200 && code < 400);
     }
     if (!sentLive)
-      spoolEnqueue("count_changed", fb->buf, fb->len, r.est_free_spaces, lastSentCount, slots, r.nCells);
+      spoolEnqueue("count_changed", fb->buf, fb->len, ev);
     lastSendMs = now;
   } else {
     postEvent("count_changed", fb, r, r.est_free_spaces, lastSentCount);
@@ -222,9 +218,13 @@ static void buildStatsJson(String& out) {
   d["heap_free"]    = (uint32_t)ESP.getFreeHeap();
   d["psram_free"]   = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   d["reset_reason"] = (int)esp_reset_reason();
-  // TODO(T6-T10): repoint curb metric value in Task C3.4 (key rename done)
-  d["cell_count"]   = cfg.cellCount;   // was roi_count
-  d["count"]        = lastResult.valid ? lastResult.est_free_spaces : -1;
+  d["strip_count"]        = cfg.stripCount;
+  d["cell_count"]         = cfg.cellCount;
+  d["est_free_spaces"]    = lastResult.valid ? lastResult.est_free_spaces    : -1;
+  d["free_curb_m"]        = lastResult.valid ? lastResult.free_curb_m        : 0.0f;
+  d["can_fit"]            = lastResult.valid && lastResult.can_fit;
+  d["reliable_range_m"]   = lastResult.valid ? lastResult.reliable_range_m   : 0.0f;
+  d["occupied_fraction"]  = lastResult.valid ? lastResult.occupied_fraction  : 0.0f;
   if (lastResult.valid) {
     d["cv_ms"]    = lastResult.tookMs;
     d["analysis"] = String(lastResult.decW) + "x" + String(lastResult.decH);

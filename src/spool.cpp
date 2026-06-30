@@ -143,7 +143,7 @@ void spoolBegin(const Config* cfg) {
 void spoolArm() { s_armed = true; }
 
 void spoolEnqueue(const char* event, const uint8_t* jpg, size_t jpgLen,
-                  int count, int prevCount, const bool* slots, int nSlots) {
+                  const CurbEvent& ev) {
   if (!s_cfg || s_cfg->spoolMode == SPOOL_OFF) return;
   if (!ensureMounted()) return;
 
@@ -152,14 +152,16 @@ void spoolEnqueue(const char* event, const uint8_t* jpg, size_t jpgLen,
   // Build the meta line. Kept short; the receiver gets device/auth from the POST.
   auto buildMeta = [&](bool withImg, String& out) {
     JsonDocument m;
-    m["event"] = event;
-    m["count"] = count;
-    m["prev"]  = prevCount;
-    m["ts"]    = (uint32_t)clockEpoch();
-    m["iso"]   = clockIso();
-    JsonArray sa = m["slots"].to<JsonArray>();
-    for (int i = 0; i < nSlots && i < MAX_CELLS; i++) sa.add(slots[i]);
-    m["img"]   = withImg ? 1 : 0;
+    m["event"]            = event;
+    m["free_curb_m"]      = ev.freeCurbM;
+    m["est_free_spaces"]  = ev.estSpaces;
+    m["prev"]             = ev.prevSpaces;
+    m["can_fit"]          = ev.canFit;
+    m["reliable_range_m"] = ev.reliableRangeM;
+    m["occupied_fraction"]= ev.occupiedFraction;
+    m["ts"]               = (uint32_t)clockEpoch();
+    m["iso"]              = clockIso();
+    m["img"]              = withImg ? 1 : 0;
     serializeJson(m, out);
   };
 
@@ -252,15 +254,27 @@ void spoolDrain() {
     return;
   }
 
+  // Drop legacy bay-era entries (written before the curb repoint) — they lack the
+  // free_curb_m key and cannot be replayed as meaningful curb events.
+  if (m["free_curb_m"].isNull()) {
+    f.close();
+    log_w("spool: dropping legacy bay-era entry #%u (no free_curb_m key)", (unsigned)s_head);
+    deleteHead();
+    return;
+  }
+
   const char* event = m["event"] | "count_changed";
-  int count = m["count"] | 0;
-  int prev  = m["prev"]  | 0;
-  uint32_t ts = m["ts"]  | 0;
+  uint32_t ts = m["ts"] | 0;
   const char* iso = m["iso"] | "";
   bool hasImg = (m["img"] | 0) != 0;
 
-  bool slots[MAX_CELLS]; int nSlots = 0;
-  for (JsonVariant v : m["slots"].as<JsonArray>()) { if (nSlots >= MAX_CELLS) break; slots[nSlots++] = v.as<bool>(); }
+  CurbEvent ev;
+  ev.freeCurbM        = m["free_curb_m"]       | 0.0f;
+  ev.estSpaces        = m["est_free_spaces"]    | 0;
+  ev.prevSpaces       = m["prev"]               | 0;
+  ev.canFit           = m["can_fit"]            | false;
+  ev.reliableRangeM   = m["reliable_range_m"]   | 0.0f;
+  ev.occupiedFraction = m["occupied_fraction"]  | 0.0f;
 
   uint8_t* buf = nullptr;
   if (hasImg && imgLen > 0) {
@@ -274,10 +288,9 @@ void spoolDrain() {
   uint32_t nowEpoch = (uint32_t)clockEpoch();
   uint32_t ageS = (nowEpoch && ts && nowEpoch > ts) ? (nowEpoch - ts) : 0;
 
-  int code = netSendEvent(*s_cfg, event, buf, imgLen, count, prev, slots, nSlots,
-                          ts, iso, /*queued=*/true, ageS);
+  int code = netSendEvent(*s_cfg, event, buf, imgLen, ev, ts, iso, /*queued=*/true, ageS);
   if (buf) free(buf);
-  webNoteSend(event, count, code);
+  webNoteSend(event, ev.estSpaces, code);
 
   if (code >= 200 && code < 400) {
     s_lastDrainFailed = false;

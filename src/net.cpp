@@ -139,13 +139,6 @@ NetStatus netGetStatus() {
 
 // --- webhook POST ----------------------------------------------------------
 
-static String buildSlotsJson(const bool* slots, int n) {
-  String s = "[";
-  for (int i = 0; i < n; i++) { if (i) s += ","; s += slots[i] ? "true" : "false"; }
-  s += "]";
-  return s;
-}
-
 static void appendField(String& head, const char* name, const String& value) {
   head += "--"; head += MP_BOUNDARY; head += "\r\n";
   head += "Content-Disposition: form-data; name=\""; head += name; head += "\"\r\n\r\n";
@@ -154,8 +147,7 @@ static void appendField(String& head, const char* name, const String& value) {
 
 int netSendEvent(const Config& cfg, const char* event,
                  const uint8_t* jpg, size_t jpgLen,
-                 int count, int prevCount,
-                 const bool* slots, int nSlots,
+                 const CurbEvent& ev,
                  uint32_t origTs, const char* origIso,
                  bool queued, uint32_t queuedAgeS) {
   if (!cfg.whUrl[0]) return -1000;   // no URL set. The enable toggle is enforced by the
@@ -164,7 +156,7 @@ int netSendEvent(const Config& cfg, const char* event,
 
   const bool hasImage = (jpg != nullptr && jpgLen > 0);
   uint32_t uptimeS = millis() / 1000;
-  String filename = String(cfg.hostname) + "_" + count + "_" + uptimeS + ".jpg";
+  String filename = String(cfg.hostname) + "_" + uptimeS + ".jpg";
 
   // Replayed events carry their original capture time; live events stamp "now".
   String ts   = String(origTs ? origTs : (uint32_t)clockEpoch());     // UTC epoch (0 if unsynced)
@@ -172,12 +164,15 @@ int netSendEvent(const Config& cfg, const char* event,
 
   String head;
   head.reserve(700);
-  appendField(head, "device",     cfg.hostname);
-  appendField(head, "event",      event);
-  appendField(head, "count",      String(count));
-  appendField(head, "prev_count", String(prevCount));
-  appendField(head, "slots",      buildSlotsJson(slots, nSlots));
-  appendField(head, "ts",         ts);
+  appendField(head, "device",               cfg.hostname);
+  appendField(head, "event",                event);
+  appendField(head, "free_curb_m",          String(ev.freeCurbM, 2));
+  appendField(head, "est_free_spaces",      String(ev.estSpaces));
+  appendField(head, "prev_est_free_spaces", String(ev.prevSpaces));
+  appendField(head, "can_fit",              ev.canFit ? "true" : "false");
+  appendField(head, "reliable_range_m",     String(ev.reliableRangeM, 2));
+  appendField(head, "occupied_fraction",    String(ev.occupiedFraction, 3));
+  appendField(head, "ts",                   ts);
   appendField(head, "time",       iso);
   appendField(head, "queued",     queued ? "true" : "false");         // backfill vs live
   if (queued) appendField(head, "queued_age_s", String(queuedAgeS));
@@ -231,7 +226,7 @@ int netSendEvent(const Config& cfg, const char* event,
   }
 
   heap_caps_free(body);
-  log_i("webhook POST '%s' count=%d -> HTTP %d (%u bytes)", event, count, code, (unsigned)total);
+  log_i("webhook POST '%s' spaces=%d -> HTTP %d (%u bytes)", event, ev.estSpaces, code, (unsigned)total);
   return code;
 }
 
