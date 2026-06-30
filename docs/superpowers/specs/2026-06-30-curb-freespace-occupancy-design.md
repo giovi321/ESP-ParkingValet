@@ -52,6 +52,13 @@ This is a "how much curb is free / is there a spot" sensor, not a per-car ground
    Auto-learn cannot bootstrap (cold start / outliers), so the foundation is a one-time metric
    anchor (needed for perspective regardless) + a standards pitch default; auto-learn then
    refines the real pitch from observed isolated cars. The user never hand-calibrates car size.
+7. **Tight camera angle / severe perspective.** (User.) The camera views the curb at a grazing
+   angle, so along-curb foreshortening is extreme. The homography math is unaffected, but the FAR
+   end of each strip is (a) **resolution-starved** (distant cells map to a few pixels) and (b)
+   **occluded** (a near car hides the curb and cars behind it along the line of sight). The device
+   must therefore determine a **usable range** per strip and report only within it — never assert
+   numbers for cells it cannot actually resolve or see. This makes the system a reliable
+   near-to-mid-range sensor whose effective reach is set by the geometry, not a full-block counter.
 
 ## Architecture
 
@@ -156,10 +163,33 @@ PER FRAME (device):
 - The sidewalk strip is on the raised pavement plane → its own corners + homography (per-strip
   flat-ground assumption holds).
 
+**Tight-angle handling (first-class, per Decision 7).** Because the camera is grazing:
+- **Usable-range gate:** at calibration the browser computes each cell's mapped pixel footprint
+  from the homography; cells whose along-strip pixel length falls below a floor (~6–8 px) are
+  marked **out-of-range** and either merged with a neighbour or excluded. The contiguous in-range
+  span from the near end defines the strip's **reliable range**; everything beyond it is reported
+  as `unknown`, not free. The number of reliable cells (hence the effective reach in metres) is a
+  property of the install, surfaced in the UI and MQTT.
+- **Resolve more pixels where it matters:** prefer a larger sensor `framesize` and decode the
+  strip region at a finer `JPG_SCALE` than the global analysis image (the strip is a small slice,
+  so the extra pixel work is bounded — budget it against PSRAM and the 90 s watchdog). This buys
+  back far-end cells. Tall (sidewall) strips matter even more here: a car's **height** stands up
+  against the background and is the most foreshortening-resistant cue when the along-curb axis
+  collapses.
+- **Occlusion is conservative-by-construction:** at a grazing angle a near car hides the curb
+  behind it. The device does NOT guess behind an occupied span — occluded far cells fold into the
+  out-of-range/`unknown` region (or, if between two occupied stretches, simply remain occupied),
+  which biases toward UNDER-counting free space (the safe direction). `free_curb_m` is therefore
+  "free curb the camera can actually see," and the coverage flag tells the consumer how much of
+  the block that represents.
+
 ### 7. Output + stability
 - **MQTT** (replace the per-bay `count`/occupancy entities; extend the discovery in `mqttc.cpp`):
   `free_curb_m`, `longest_free_run_m`, `can_fit`, `est_free_spaces` (+ optional band), and
   `occupied_fraction`, plus a `confidence`/`dark` flag and optional per-strip / per-gap detail.
+  Also publish **`reliable_range_m`** (how far down the block the camera can actually resolve,
+  per Decision 7) so the consumer knows the coverage behind every other number — at a tight
+  angle this can be a fraction of the full strip.
 - **Three smoothing layers:** (1) per-cell hysteresis + `stableFrames` debounce; (2) spatial
   median per strip; (3) final-integer debounce/hysteresis on `est_free_spaces` so it doesn't flap
   between N and N+1 as a vehicle passes or light shifts. A *parked* occluder persists → biases
@@ -200,10 +230,14 @@ PER FRAME (device):
   behaviour as cars come/go. Capture + train a per-cell model later.
 
 ## Risks (from research)
-- **Resolution floor × perspective:** at ~200×150 analysis a full strip gives only ~5–8 px/cell;
-  far cells cover more ground/pixel → distant gaps coarsely quantized, far cars may be too few
-  pixels. Mitigate: tall (sidewall) strip; flag/merge resolution-starved far cells; optionally
-  decode the strip one JPG scale finer (costs PSRAM/CPU vs the 90 s watchdog).
+- **Resolution floor × perspective — AMPLIFIED by the tight angle (Decision 7), the top risk:**
+  at ~200×150 analysis a full strip already gives only ~5–8 px/cell, and a grazing angle makes the
+  far end far worse (steep along-curb density gradient) plus occluded behind near cars. The effective
+  reliable reach may be only the near-to-mid portion of the block. Mitigate per Decision 7: the
+  usable-range gate (report `unknown` beyond it, surface `reliable_range_m`), tall sidewall strips,
+  larger `framesize` / finer strip decode, and occlusion-as-conservative-under-count. Set
+  expectations: this reliably answers "is there space near the camera and roughly how much," not
+  "exact free count over the whole block." Validate the actual reach against a real frame.
 - **Achromatic cars** defeat the colour cue and a clean panel can read low-edge → a car read as
   FREE = OVER-count (unsafe direction). Texture/LBP + relative-edge baseline must carry the
   negative; colour positive-only.
