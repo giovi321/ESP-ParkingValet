@@ -105,7 +105,17 @@ void configLoadDefaults(Config& c) {
   c.afMode      = 1;     // focus once at boot (best for a fixed scene)
   c.tzOffsetMin = 0;     // UTC by default
 
-  c.roiCount = 0;
+  // Curb geometry (empty until user traces strips in the web UI)
+  c.stripCount = 0;
+  c.cellCount  = 0;
+
+  // Curb tunables
+  c.carPitchM      = 6.0f;
+  c.clearInteriorM = 1.2f;
+  c.clearEndM      = 1.8f;
+  c.smoothMode     = 1;
+  c.darkLumaThresh = 40.0f;
+  c.pitchLearn     = 1;
 }
 
 // ---- full (de)serialization (always includes secrets) ---------------------
@@ -196,49 +206,40 @@ static void serializeFull(const Config& c, JsonObject o) {
   o["afMode"]      = c.afMode;
   o["tzOffsetMin"] = c.tzOffsetMin;
 
-  JsonArray arr = o["rois"].to<JsonArray>();
-  for (int i = 0; i < c.roiCount && i < MAX_ROIS; i++) {
-    JsonObject r = arr.add<JsonObject>();
-    r["name"]      = c.rois[i].name;
-    r["threshold"] = c.rois[i].threshold;
-    r["enabled"]   = c.rois[i].enabled;
-    JsonArray pts = r["points"].to<JsonArray>();
-    for (int j = 0; j < c.rois[i].nPoints && j < MAX_POLY; j++) {
-      JsonObject p = pts.add<JsonObject>();
-      p["x"] = c.rois[i].px[j];
-      p["y"] = c.rois[i].py[j];
-    }
-  }
-}
+  // Curb tunables
+  o["carPitchM"]      = c.carPitchM;
+  o["clearInteriorM"] = c.clearInteriorM;
+  o["clearEndM"]      = c.clearEndM;
+  o["smoothMode"]     = c.smoothMode;
+  o["darkLumaThresh"] = c.darkLumaThresh;
+  o["pitchLearn"]     = c.pitchLearn;
 
-static void parseRois(Config& c, JsonArrayConst arr) {
-  int n = 0;
-  for (JsonObjectConst r : arr) {
-    if (n >= MAX_ROIS) break;
-    Roi& roi = c.rois[n];
-    setStr(roi.name, sizeof(roi.name), r["name"] | "");
-    roi.threshold = r["threshold"] | 0.0f;
-    roi.enabled   = r["enabled"]   | true;
-    roi.nPoints   = 0;
-    if (r["points"].is<JsonArrayConst>()) {
-      for (JsonObjectConst p : r["points"].as<JsonArrayConst>()) {
-        if (roi.nPoints >= MAX_POLY) break;
-        roi.px[roi.nPoints] = p["x"] | 0.0f;
-        roi.py[roi.nPoints] = p["y"] | 0.0f;
-        roi.nPoints++;
-      }
-    } else if (!r["w"].isNull()) {
-      // legacy rectangle -> 4-point polygon (backward compatibility)
-      float x = r["x"] | 0.0f, y = r["y"] | 0.0f, w = r["w"] | 0.0f, h = r["h"] | 0.0f;
-      roi.px[0] = x;     roi.py[0] = y;
-      roi.px[1] = x + w; roi.py[1] = y;
-      roi.px[2] = x + w; roi.py[2] = y + h;
-      roi.px[3] = x;     roi.py[3] = y + h;
-      roi.nPoints = 4;
+  // Curb strips array
+  {
+    JsonArray arr = o["strips"].to<JsonArray>();
+    for (int i = 0; i < c.stripCount && i < MAX_STRIPS; i++) {
+      JsonObject s = arr.add<JsonObject>();
+      s["name"]       = c.strips[i].name;
+      s["realLenM"]   = c.strips[i].realLenM;
+      s["realWidthM"] = c.strips[i].realWidthM;
+      s["nCells"]     = c.strips[i].nCells;
     }
-    if (roi.nPoints >= 3) n++;   // drop degenerate slots
   }
-  c.roiCount = n;
+
+  // Curb cells array
+  {
+    JsonArray arr = o["cells"].to<JsonArray>();
+    for (int i = 0; i < c.cellCount && i < MAX_CELLS; i++) {
+      JsonObject cell = arr.add<JsonObject>();
+      JsonArray px = cell["px"].to<JsonArray>();
+      for (int j = 0; j < 4; j++) px.add(c.cells[i].px[j]);
+      JsonArray py = cell["py"].to<JsonArray>();
+      for (int j = 0; j < 4; j++) py.add(c.cells[i].py[j]);
+      cell["lenM"]    = c.cells[i].lenM;
+      cell["strip"]   = c.cells[i].strip;
+      cell["enabled"] = c.cells[i].enabled;
+    }
+  }
 }
 
 static void parseFull(Config& c, JsonObjectConst o) {
@@ -326,7 +327,51 @@ static void parseFull(Config& c, JsonObjectConst o) {
   c.afMode      = o["afMode"]      | c.afMode;
   c.tzOffsetMin = o["tzOffsetMin"] | c.tzOffsetMin;
 
-  if (o["rois"].is<JsonArrayConst>()) parseRois(c, o["rois"].as<JsonArrayConst>());
+  // Curb tunables (merge with o[k] | c.k pattern)
+  c.carPitchM      = o["carPitchM"]      | c.carPitchM;
+  c.clearInteriorM = o["clearInteriorM"] | c.clearInteriorM;
+  c.clearEndM      = o["clearEndM"]      | c.clearEndM;
+  c.smoothMode     = o["smoothMode"]     | c.smoothMode;
+  c.darkLumaThresh = o["darkLumaThresh"] | c.darkLumaThresh;
+  c.pitchLearn     = o["pitchLearn"]     | c.pitchLearn;
+
+  // Curb strips: pre-seed empty; overwrite only when present, so an old backup
+  // without "strips" yields zero strips (user re-traces in the web UI).
+  if (o["strips"].is<JsonArrayConst>()) {
+    int n = 0;
+    memset(c.strips, 0, sizeof(c.strips));
+    for (JsonObjectConst s : o["strips"].as<JsonArrayConst>()) {
+      if (n >= MAX_STRIPS) break;
+      if (s["name"].is<const char*>()) setStr(c.strips[n].name, sizeof(c.strips[n].name), s["name"]);
+      c.strips[n].realLenM   = s["realLenM"]   | 0.0f;
+      c.strips[n].realWidthM = s["realWidthM"] | 0.0f;
+      c.strips[n].nCells     = s["nCells"]     | 0;
+      n++;
+    }
+    c.stripCount = n;
+  }
+
+  // Curb cells: pre-seed empty; overwrite only when present.
+  if (o["cells"].is<JsonArrayConst>()) {
+    int n = 0;
+    memset(c.cells, 0, sizeof(c.cells));
+    for (JsonObjectConst cell : o["cells"].as<JsonArrayConst>()) {
+      if (n >= MAX_CELLS) break;
+      if (cell["px"].is<JsonArrayConst>()) {
+        JsonArrayConst px = cell["px"].as<JsonArrayConst>();
+        for (int j = 0; j < 4; j++) c.cells[n].px[j] = px[j] | 0.0f;
+      }
+      if (cell["py"].is<JsonArrayConst>()) {
+        JsonArrayConst py = cell["py"].as<JsonArrayConst>();
+        for (int j = 0; j < 4; j++) c.cells[n].py[j] = py[j] | 0.0f;
+      }
+      c.cells[n].lenM    = cell["lenM"]    | 0.0f;
+      c.cells[n].strip   = (uint8_t)(cell["strip"]   | (int)0);
+      c.cells[n].enabled = cell["enabled"] | true;
+      n++;
+    }
+    c.cellCount = n;
+  }
 }
 
 // ---- NVS load / save ------------------------------------------------------

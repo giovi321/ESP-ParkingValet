@@ -5,20 +5,20 @@
 // Own key inside the config namespace (parallel to CFG_KEY, never overlaps it).
 static const char* CVSTATE_KEY = "cvstate";
 
-bool cvStateLoad(CvPersist& out) {
+bool cvStateLoad(CurbPersist& out) {
   Preferences p;
   if (!p.begin(CFG_NAMESPACE, /*readOnly=*/true)) return false;
   size_t len = p.getBytesLength(CVSTATE_KEY);
-  bool ok = (len == sizeof(CvPersist)) &&
-            (p.getBytes(CVSTATE_KEY, &out, sizeof(CvPersist)) == sizeof(CvPersist));
+  bool ok = (len == sizeof(CurbPersist)) &&
+            (p.getBytes(CVSTATE_KEY, &out, sizeof(CurbPersist)) == sizeof(CurbPersist));
   p.end();
-  return ok && out.magic == CV_PERSIST_MAGIC;
+  return ok && out.magic == CURB_PERSIST_MAGIC;
 }
 
-bool cvStateSave(const CvPersist& in) {
+bool cvStateSave(const CurbPersist& in) {
   Preferences p;
   if (!p.begin(CFG_NAMESPACE, /*readOnly=*/false)) return false;
-  size_t n = p.putBytes(CVSTATE_KEY, &in, sizeof(CvPersist));
+  size_t n = p.putBytes(CVSTATE_KEY, &in, sizeof(CurbPersist));
   p.end();
-  return n == sizeof(CvPersist);
+  return n == sizeof(CurbPersist);
 }

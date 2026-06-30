@@ -11,7 +11,7 @@ void CvEngine::begin(const Config* cfg) {
 }
 
 void CvEngine::reset() {
-  for (int i = 0; i < MAX_ROIS; i++) {
+  for (int i = 0; i < MAX_CELLS; i++) {
     _committed[i]    = false;
     _lastRaw[i]      = false;
     _stableCnt[i]    = 0;
@@ -22,17 +22,17 @@ void CvEngine::reset() {
 }
 
 void CvEngine::recalibrate(int index) {
-  if (index < 0) { reset(); return; }      // all bays
-  if (index >= MAX_ROIS) return;           // out of range -> no-op
+  if (index < 0) { reset(); return; }       // all cells
+  if (index >= MAX_CELLS) return;            // out of range -> no-op
   _committed[index]    = false;
   _lastRaw[index]      = false;
   _stableCnt[index]    = 0;
   _baselineEdge[index] = 0.0f;
-  _baselineInit[index] = false;            // re-seeds from the next frame (relative mode)
+  _baselineInit[index] = false;             // re-seeds from the next frame (relative mode)
 }
 
 void CvEngine::markOccupied(int index) {
-  if (index < 0 || index >= MAX_ROIS) return;   // single bay only (no "all occupied")
+  if (index < 0 || index >= MAX_CELLS) return;   // single cell only (no "all occupied")
   _committed[index] = true;
   _lastRaw[index]   = true;
   _stableCnt[index] = 0;
@@ -40,61 +40,60 @@ void CvEngine::markOccupied(int index) {
     float hys   = constrain(_cfg->hysteresis, 0.0f, 0.9f);
     float delta = (_cfg->relDelta > 0.0f) ? _cfg->relDelta : 1.0f;
     float enter = delta * (1.0f + hys);
-    // Put the empty reference one entry-band below the bay's current edge, so the
-    // live metric (edge - baseline) sits right at the entry level: the bay reads
-    // occupied now, yet drops to empty (and the EMA relearns the true baseline)
-    // once the car actually leaves and the edge falls below this reference.
+    // Put the empty reference one entry-band below the cell's current edge, so
+    // the live metric (edge - baseline) sits right at the entry level: the cell
+    // reads occupied now, yet drops to empty (and the EMA relearns the true
+    // baseline) once the space clears and the edge falls below this reference.
     float base = _lastEdge[index] - enter;
     _baselineEdge[index] = base > 0.0f ? base : 0.0f;
     _baselineInit[index] = true;
   }
 }
 
-void CvEngine::snapshotState(CvPersist& o) const {
-  o.magic    = CV_PERSIST_MAGIC;
-  o.roiCount = (uint16_t)(_cfg ? _cfg->roiCount : 0);
-  o.roiSig   = roiSignature();
-  for (int i = 0; i < MAX_ROIS; i++) {
+void CvEngine::snapshotState(CurbPersist& o) const {
+  o.magic     = CURB_PERSIST_MAGIC;
+  o.cellCount = (uint16_t)(_cfg ? _cfg->cellCount : 0);
+  o.geomSig   = roiSignature();
+  for (int i = 0; i < MAX_CELLS; i++) {
     o.baselineEdge[i] = _baselineEdge[i];
     o.baselineInit[i] = _baselineInit[i] ? 1 : 0;
     o.committed[i]    = _committed[i] ? 1 : 0;
   }
+  o.carPitchLearned = 0.0f;   // placeholder for Task C4.1
+  o.learnSamples    = 0;      // placeholder for Task C4.1
 }
 
-bool CvEngine::restoreState(const CvPersist& in) {
-  if (in.magic != CV_PERSIST_MAGIC) return false;
-  if (in.roiSig != roiSignature())  return false;   // ROI geometry changed -> ignore, seed live
-  for (int i = 0; i < MAX_ROIS; i++) {
+bool CvEngine::restoreState(const CurbPersist& in) {
+  if (in.magic != CURB_PERSIST_MAGIC) return false;
+  if (in.geomSig != roiSignature())   return false;   // geometry changed -> ignore, seed live
+  for (int i = 0; i < MAX_CELLS; i++) {
     _baselineEdge[i] = in.baselineEdge[i];
     _baselineInit[i] = in.baselineInit[i] != 0;
     _committed[i]    = in.committed[i] != 0;
-    _lastRaw[i]      = _committed[i];                // align debounce with the restored commit
+    _lastRaw[i]      = _committed[i];                 // align debounce with the restored commit
     _stableCnt[i]    = 0;
-    _lastEdge[i]     = _baselineEdge[i];             // plausible until the first analyze() runs
+    _lastEdge[i]     = _baselineEdge[i];              // plausible until the first analyze() runs
   }
-  // Adopt the current signature so the first analyze() doesn't see a "changed ROI
-  // set" (member starts 0) and reset() away everything we just restored.
+  // Adopt the current signature so the first analyze() doesn't see a "changed
+  // geometry" (member starts 0) and reset() away everything we just restored.
   _roiSig = roiSignature();
   return true;
 }
 
 uint32_t CvEngine::roiSignature() const {
-  // Cheap hash of ROI geometry/count so we can reset state when they change.
+  // Cheap hash of cell geometry/count so we can reset state when they change.
   uint32_t h = 2166136261u;
   auto mix = [&](uint32_t v) { h ^= v; h *= 16777619u; };
-  mix((uint32_t)_cfg->roiCount);
-  for (int i = 0; i < _cfg->roiCount && i < MAX_ROIS; i++) {
-    const Roi& r = _cfg->rois[i];
-    mix((uint32_t)r.nPoints);
-    for (int j = 0; j < r.nPoints && j < MAX_POLY; j++) {
-      mix((uint32_t)(r.px[j] * 1000));
-      mix((uint32_t)(r.py[j] * 1000));
+  if (!_cfg) return h;
+  mix((uint32_t)_cfg->cellCount);
+  for (int i = 0; i < _cfg->cellCount && i < MAX_CELLS; i++) {
+    const CurbCell& c = _cfg->cells[i];
+    for (int j = 0; j < 4; j++) {
+      mix((uint32_t)(c.px[j] * 1000));
+      mix((uint32_t)(c.py[j] * 1000));
     }
-    // NOTE: `enabled` is deliberately NOT mixed in. It isn't geometry, and a
-    // disabled bay keeps its array slot, so an enable/disable toggle leaves every
-    // slot's index — and its per-slot state — valid. Hashing it here would reset
-    // ALL bays' adaptive baselines on every toggle, which in relative mode makes
-    // occupied bays briefly read empty during tuning.
+    // NOTE: `enabled` is deliberately NOT mixed in for the same reason as before:
+    // a dead-zone toggle should not drop all cells' adaptive baselines.
   }
   return h;
 }
@@ -128,11 +127,17 @@ static int scaleDiv(jpg_scale_t s) {
                case JPG_SCALE_2X: return 2; default: return 1; }
 }
 
-bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvResult& out) {
+bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbResult& out) {
   uint32_t t0 = millis();
   out.valid = false;
-  out.count = 0;
-  out.n = _cfg ? _cfg->roiCount : 0;
+  out.nCells = 0;
+  out.est_free_spaces    = 0;     // TODO(T6-T10): full headline computation in Task C3.1
+  out.free_curb_m        = 0.0f;
+  out.longest_free_run_m = 0.0f;
+  out.can_fit            = false;
+  out.reliable_range_m   = 0.0f;
+  out.occupied_fraction  = 0.0f;
+  out.dark               = false;
   if (!_cfg || srcW <= 0 || srcH <= 0) return false;
 
   // Skip malformed/truncated frames (missing JPEG SOI/EOI markers) without
@@ -143,7 +148,7 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
     return false;
   }
 
-  // Reset per-slot state if the ROI set changed.
+  // Reset per-cell state if the geometry changed.
   uint32_t sig = roiSignature();
   if (sig != _roiSig) { reset(); _roiSig = sig; }
 
@@ -167,28 +172,29 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
   }
 
   const float globalThr = _cfg->edgeThreshold;
-  const float hys = constrain(_cfg->hysteresis, 0.0f, 0.9f);  // keep the exit band positive (>=1.0 would latch occupied)
+  const float hys = constrain(_cfg->hysteresis, 0.0f, 0.9f);  // keep exit band positive
   const uint8_t stableNeed = _cfg->stableFrames ? _cfg->stableFrames : 1;
   const bool  relative = (_cfg->occupancyMode == OCCUPANCY_RELATIVE);
   const float relDelta = (_cfg->relDelta > 0.0f) ? _cfg->relDelta : 1.0f;  // floor so the band can't collapse
 
-  int count = 0;
-  for (int i = 0; i < _cfg->roiCount && i < MAX_ROIS; i++) {
-    const Roi& roi = _cfg->rois[i];
-    SlotResult& sr = out.slots[i];
-    // Effective threshold/delta (also shown in the UI). In relative mode every
-    // bay uses the global delta against its own baseline; the per-ROI absolute
-    // override applies only in absolute mode.
-    sr.threshold = relative ? relDelta : ((roi.threshold > 0.0f) ? roi.threshold : globalThr);
+  int nCells = (_cfg->cellCount < MAX_CELLS) ? _cfg->cellCount : MAX_CELLS;
+  out.nCells = nCells;
 
-    // Polygon vertices in pixel space + bounding box.
-    float vx[MAX_POLY], vy[MAX_POLY];
-    int np = roi.nPoints < MAX_POLY ? roi.nPoints : MAX_POLY;
+  // Per-cell detection loop: reuses the ray-cast accumulator + featuresFinalize +
+  // relative-edge/hysteresis/debounce decision primitives from the bay-era engine.
+  // Full per-cell pipeline (spatial smoothing, headline aggregation) is Task C2.1/C3.1.
+  for (int i = 0; i < nCells; i++) {
+    const CurbCell& cell = _cfg->cells[i];
+    CellResult& cellRes  = out.cells[i];
+
+    // CurbCell always has 4 quad vertices (no variable nPoints like the old Roi).
+    const int np = 4;
+    float vx[4], vy[4];
     float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
     for (int j = 0; j < np; j++) {
-      vx[j] = roi.px[j] * w; vy[j] = roi.py[j] * h;
-      if (vx[j] < minx) minx = vx[j];  if (vx[j] > maxx) maxx = vx[j];
-      if (vy[j] < miny) miny = vy[j];  if (vy[j] > maxy) maxy = vy[j];
+      vx[j] = cell.px[j] * w; vy[j] = cell.py[j] * h;
+      if (vx[j] < minx) minx = vx[j]; if (vx[j] > maxx) maxx = vx[j];
+      if (vy[j] < miny) miny = vy[j]; if (vy[j] > maxy) maxy = vy[j];
     }
     int x0 = constrain((int)floorf(minx), 0, w - 2);
     int y0 = constrain((int)floorf(miny), 0, h - 2);
@@ -200,7 +206,7 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
       const uint8_t* row = &_luma[y * w];
       const uint8_t* nxt = &_luma[(y + 1) * w];
       for (int x = x0; x < x1; x++) {
-        // point-in-polygon (ray casting)
+        // point-in-polygon (ray casting) for the 4-vertex quad
         bool inside = false;
         for (int a = 0, b = np - 1; a < np; b = a++) {
           if (((vy[a] > y) != (vy[b] > y)) &&
@@ -218,11 +224,11 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
         // uniform LBP(8,1): compare 8 neighbours to centre (guard image borders)
         if (x > 0 && x < w - 1 && y > 0 && y < h - 1) {
           const uint8_t* r0 = &_luma[(y - 1) * w];
-          uint8_t c = (uint8_t)lum;
+          uint8_t c_lum = (uint8_t)lum;
           uint8_t code =
-            ((r0[x - 1] >= c) << 7) | ((r0[x] >= c) << 6) | ((r0[x + 1] >= c) << 5) |
-            ((row[x + 1] >= c) << 4) | ((nxt[x + 1] >= c) << 3) | ((nxt[x] >= c) << 2) |
-            ((nxt[x - 1] >= c) << 1) | ((row[x - 1] >= c) << 0);
+            ((r0[x - 1] >= c_lum) << 7) | ((r0[x] >= c_lum) << 6) | ((r0[x + 1] >= c_lum) << 5) |
+            ((row[x + 1] >= c_lum) << 4) | ((nxt[x + 1] >= c_lum) << 3) | ((nxt[x] >= c_lum) << 2) |
+            ((nxt[x - 1] >= c_lum) << 1) | ((row[x - 1] >= c_lum) << 0);
           uint8_t rot = (uint8_t)((code << 1) | (code >> 7));
           int trans = __builtin_popcount((unsigned)(code ^ rot));
           if (trans <= 2) fa.lbp[__builtin_popcount((unsigned)code)]++;  // uniform -> bin by set-bits 0..8
@@ -230,54 +236,56 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
         }
         // colour from the matching RGB565 pixel
         uint16_t cpx = px[y * w + x];
-        int cr = ((cpx >> 11) & 0x1F) << 3, cg = ((cpx >> 5) & 0x3F) << 2, cb = (cpx & 0x1F) << 3;
-        int mx = cr > cg ? (cr > cb ? cr : cb) : (cg > cb ? cg : cb);
-        int mn = cr < cg ? (cr < cb ? cr : cb) : (cg < cb ? cg : cb);
+        int r5 = ((cpx >> 11) & 0x1F) << 3, g6 = ((cpx >> 5) & 0x3F) << 2, b5 = (cpx & 0x1F) << 3;
+        int mx = r5 > g6 ? (r5 > b5 ? r5 : b5) : (g6 > b5 ? g6 : b5);
+        int mn = r5 < g6 ? (r5 < b5 ? r5 : b5) : (g6 < b5 ? g6 : b5);
         fa.satSum_x1000 += mx ? (int64_t)(mx - mn) * 1000 / mx : 0;
-        fa.brSum += (cb - cr);
+        fa.brSum += (b5 - r5);
       }
     }
     float edge  = fa.cnt ? (float)fa.gradSum / (float)fa.cnt : 0.0f;
     float meanI = fa.cnt ? (float)fa.intSum  / (float)fa.cnt : 0.0f;
-    sr.edge = edge; sr.meanI = meanI;
+    cellRes.edge = edge; cellRes.meanI = meanI;
     _lastEdge[i] = edge;   // remembered for markOccupied()'s re-base math
-    featuresFinalize(fa, _baselineEdge[i], sr.feat);
-    sr.clfScore = -1.0f;
+    featuresFinalize(fa, _baselineEdge[i], cellRes.feat);
+    cellRes.clfScore = -1.0f;
+    cellRes.inRange  = cell.enabled;
 
-    if (!roi.enabled) {
+    if (!cell.enabled) {
       // Keep geometry but do not count; report instantaneous values only.
-      sr.rawOccupied = false; sr.occupied = false; sr.baselineEdge = _baselineEdge[i];
+      cellRes.rawOccupied = false;
+      cellRes.occupied    = false;
+      cellRes.baselineEdge = _baselineEdge[i];
+      cellRes.inRange      = false;
       continue;
     }
 
     // In relative mode, seed the empty baseline on the very first frame so the
     // first decision compares against a real reference, not zero (which would
-    // read as instantly occupied). A bay genuinely occupied at boot (or the first
-    // time it is enabled) then seeds high and reads empty until its first
-    // departure — a deliberate trade for lighting robustness; absolute mode is
-    // correct from boot if that matters.
+    // read as instantly occupied).
     if (relative && !_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; }
 
-    // Classifier score whenever a model is embedded — cheap (a few ops). It drives the
-    // decision when the classifier engine is selected, and otherwise serves as a live
-    // disagreement monitor against the edge engine in the UI.
-    sr.clfScore = clfAvailable() ? clfScore(sr.feat) : -1.0f;
+    // Classifier score whenever a model is embedded (cheap: a few ops).
+    cellRes.clfScore = clfAvailable() ? clfScore(cellRes.feat) : -1.0f;
+
+    // Effective threshold (no per-cell override in curb model; global only).
+    float thr = relative ? relDelta : globalThr;
 
     bool raw;
-    if (_cfg->occupancyEngine == 1 && sr.clfScore >= 0.0f) {
+    if (_cfg->occupancyEngine == 1 && cellRes.clfScore >= 0.0f) {
       // Probability hysteresis around 0.5 (same `hys` fraction as the edge band).
-      float p = sr.clfScore;
+      float p = cellRes.clfScore;
       float pen = 0.5f + hys * 0.5f;   // enter-occupied threshold
       float pex = 0.5f - hys * 0.5f;   // exit-occupied threshold
       raw = _committed[i] ? (p >= pex) : (p > pen);
     } else {
       // Legacy edge engine: absolute edge, or its rise above the empty baseline.
       float metric = relative ? (edge - _baselineEdge[i]) : edge;
-      float enter = sr.threshold * (1.0f + hys);
-      float exit  = sr.threshold * (1.0f - hys);
-      raw = _committed[i] ? (metric >= exit) : (metric > enter);
+      float enter  = thr * (1.0f + hys);
+      float exitT  = thr * (1.0f - hys);
+      raw = _committed[i] ? (metric >= exitT) : (metric > enter);
     }
-    sr.rawOccupied = raw;
+    cellRes.rawOccupied = raw;
 
     // Debounce: require the raw decision to persist before committing.
     if (raw == _committed[i]) {
@@ -295,24 +303,20 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvRes
     }
     _lastRaw[i] = raw;
 
-    // Adaptive empty-edge baseline: track the edge while the bay is committed-
-    // empty and stable, and freeze it while occupied so a long-parked car can't
-    // pull the reference up. In relative mode this is the live reference the
-    // decision subtracts (ambient light drift cancels out); in absolute mode it
-    // is just a diagnostic / auto-threshold helper. It adapts in both modes, so
-    // toggling to relative finds a warmed-up baseline ready to use.
+    // Adaptive empty-edge baseline: track while committed-empty and stable,
+    // freeze while occupied. In relative mode this is the live reference the
+    // decision subtracts (ambient light drift cancels out).
     if (!_committed[i] && _stableCnt[i] == 0) {
       if (!_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; }
       else _baselineEdge[i] += _cfg->baselineEma * (edge - _baselineEdge[i]);
     }
-    sr.baselineEdge = _baselineEdge[i];
-
-    sr.occupied = _committed[i];
-    if (_committed[i]) count++;
+    cellRes.baselineEdge = _baselineEdge[i];
+    cellRes.occupied     = _committed[i];
   }
 
-  out.count = count;
+  // TODO(T6-T10): full curb free-gap reducer (free_curb_m / est_free_spaces /
+  // can_fit / etc.) is implemented in Task C3.1. For now headline fields remain 0.
   out.tookMs = millis() - t0;
-  out.valid = true;
+  out.valid  = true;
   return true;
 }

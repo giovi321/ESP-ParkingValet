@@ -16,8 +16,8 @@ struct FeatureAccum {
 
 inline void featureAccumInit(FeatureAccum& a) { memset(&a, 0, sizeof(a)); }
 
-// Produce the canonical CLF_NFEAT vector. baselineEdge is the bay's adaptive empty
-// reference (SlotResult.baselineEdge / _baselineEdge[i]).
+// Produce the canonical CLF_NFEAT vector. baselineEdge is the cell's adaptive empty
+// reference (CellResult.baselineEdge / _baselineEdge[i]).
 inline void featuresFinalize(const FeatureAccum& a, float baselineEdge, float* feat) {
   float n = a.cnt ? (float)a.cnt : 1.0f;
   float edge  = (float)a.gradSum / n;

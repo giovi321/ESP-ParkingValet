@@ -9,9 +9,9 @@
 
 // RGB565 packing matching cv.cpp's extraction (R in bits 15..11, G 10..5, B 4..0).
 #define RGB565(r, g, b) ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
-static const uint16_t COL_FREE = RGB565(46, 204, 113);
-static const uint16_t COL_OCC  = RGB565(255, 91, 91);
-static const uint16_t COL_DIS  = RGB565(140, 140, 140);
+static const uint16_t COL_FREE  = RGB565(46, 204, 113);
+static const uint16_t COL_OCC   = RGB565(255, 91, 91);
+static const uint16_t COL_DIS   = RGB565(140, 140, 140);
 static const uint16_t COL_WHITE = RGB565(255, 255, 255);
 static const uint16_t COL_BLACK = RGB565(0, 0, 0);
 
@@ -85,7 +85,9 @@ static void drawText(uint16_t* buf, int w, int h, int x, int y, const char* str,
   for (int i = 0; i < n; i++) drawChar(buf, w, h, x + i * 6 * s, y, str[i], c, s);
 }
 
-size_t overlayRenderJpeg(const Config& cfg, const CvResult& cv, uint8_t** out) {
+// Draw helpers (drawLine, pointInPoly) are used in Task C3.2; keep them here.
+
+size_t overlayRenderJpeg(const Config& cfg, const CurbResult& cv, uint8_t** out) {
   *out = nullptr;
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb) { log_w("overlay: no frame"); return 0; }
@@ -94,56 +96,19 @@ size_t overlayRenderJpeg(const Config& cfg, const CvResult& cv, uint8_t** out) {
   jpg_scale_t scale = (fb->width > 800) ? JPG_SCALE_2X : JPG_SCALE_NONE;
   int div = (scale == JPG_SCALE_2X) ? 2 : 1;
   int w = fb->width / div, h = fb->height / div;
-  size_t px = (size_t)w * (h + 8);   // headroom: decoder rounds up to MCU grid
-  uint16_t* rgb = (uint16_t*)heap_caps_malloc(px * 2, MALLOC_CAP_SPIRAM);
-  if (!rgb) rgb = (uint16_t*)heap_caps_malloc(px * 2, MALLOC_CAP_8BIT);
+  size_t npx = (size_t)w * (h + 8);   // headroom: decoder rounds up to MCU grid
+  uint16_t* rgb = (uint16_t*)heap_caps_malloc(npx * 2, MALLOC_CAP_SPIRAM);
+  if (!rgb) rgb = (uint16_t*)heap_caps_malloc(npx * 2, MALLOC_CAP_8BIT);
   if (!rgb) { esp_camera_fb_return(fb); log_w("overlay: rgb OOM"); return 0; }
 
   bool ok = jpg2rgb565(fb->buf, fb->len, (uint8_t*)rgb, scale);
   esp_camera_fb_return(fb);
   if (!ok) { heap_caps_free(rgb); log_w("overlay: decode failed"); return 0; }
 
-  // Draw each bay.
-  for (int i = 0; i < cfg.roiCount && i < MAX_ROIS; i++) {
-    const Roi& r = cfg.rois[i];
-    int np = r.nPoints < MAX_POLY ? r.nPoints : MAX_POLY;
-    if (np < 3) continue;
-    float vx[MAX_POLY], vy[MAX_POLY];
-    float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f, cx = 0, cy = 0;
-    for (int j = 0; j < np; j++) {
-      vx[j] = r.px[j] * w; vy[j] = r.py[j] * h;
-      cx += vx[j]; cy += vy[j];
-      if (vx[j] < minx) minx = vx[j]; if (vx[j] > maxx) maxx = vx[j];
-      if (vy[j] < miny) miny = vy[j]; if (vy[j] > maxy) maxy = vy[j];
-    }
-    cx /= np; cy /= np;
-    bool occ = (cv.valid && i < cv.n) ? cv.slots[i].occupied : false;
-    uint16_t col = !r.enabled ? COL_DIS : (occ ? COL_OCC : COL_FREE);
-
-    // translucent fill
-    int x0 = (int)floorf(minx), y0 = (int)floorf(miny);
-    int x1 = (int)ceilf(maxx),  y1 = (int)ceilf(maxy);
-    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
-    if (x1 > w - 1) x1 = w - 1; if (y1 > h - 1) y1 = h - 1;
-    for (int y = y0; y <= y1; y++)
-      for (int x = x0; x <= x1; x++)
-        if (pointInPoly(vx, vy, np, (float)x, (float)y))
-          blendPx(rgb, w, h, x, y, col, 64);
-
-    // outline
-    for (int j = 0; j < np; j++) {
-      int k = (j + 1) % np;
-      drawLine(rgb, w, h, (int)vx[j], (int)vy[j], (int)vx[k], (int)vy[k], col);
-    }
-
-    // label near centroid
-    if (r.name[0]) {
-      int lx = (int)cx - (int)(strlen(r.name) * 6);
-      int ly = (int)cy - 7;
-      if (lx < 2) lx = 2;
-      drawText(rgb, w, h, lx, ly, r.name, COL_WHITE, 2);
-    }
-  }
+  // TODO(T6-T10): full curb cell/strip draw loop implemented in Task C3.2.
+  // For now: render a clean frame with only the timestamp overlay.
+  // (cv parameter is kept for the signature; will be used in C3.2.)
+  (void)cv;
 
   // timestamp, bottom-left
   String ts = clockLocalStamp(cfg.tzOffsetMin);

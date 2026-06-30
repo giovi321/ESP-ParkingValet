@@ -10,7 +10,7 @@
 //
 // `cfg` and `last` are live pointers owned by main(); the loop updates *last
 // every CV cycle, and the API reads/merges *cfg.
-void webBegin(Config* cfg, CvResult* last);
+void webBegin(Config* cfg, CurbResult* last);
 void webLoop();
 
 // Record the outcome of a webhook send so the UI can display it.

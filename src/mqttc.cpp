@@ -22,8 +22,8 @@
 
 #include "logbuf.h"   // log macros route to the web console (include last)
 
-static const Config*   s_cfg  = nullptr;
-static const CvResult* s_last = nullptr;
+static const Config*     s_cfg  = nullptr;
+static const CurbResult* s_last = nullptr;
 static WiFiClient        s_plain;
 static WiFiClientSecure  s_tls;
 static PubSubClient      s_mqtt;
@@ -31,14 +31,14 @@ static uint32_t s_lastTry = 0;
 static uint32_t s_lastPub = 0;
 static bool     s_began   = false;
 
-// Per-bay control reuses the CV actions that back the web UI buttons (main.cpp).
+// Per-cell control reuses the CV actions that back the web UI buttons (main.cpp).
 extern void cvRecalibrate(int index);   // "mark free": re-seed baseline(s) (index<0 = all)
-extern void cvMarkOccupied(int index);  // "mark occupied": force one bay occupied
+extern void cvMarkOccupied(int index);  // "mark occupied": force one cell occupied
 
 static volatile bool s_photoReq    = false;   // set by the receive callback, serviced in mqttLoop
 static uint32_t      s_lastPhotoMs = 0;
 static const uint32_t PHOTO_MIN_MS = 3000;    // rate-limit overlay photos
-static uint32_t      s_roiSig      = 0;       // detect ROI edits to refresh discovery
+static uint32_t      s_roiSig      = 0;       // detect strip edits to refresh discovery
 static const char*   SETSTATE_IDLE = "-";     // select idle option (ASCII, see options list)
 
 static const char* NODE       = "parkingvalet";   // stable HA object_id / unique_id prefix
@@ -48,18 +48,19 @@ static const char* GITHUB_URL = "https://github.com/giovi321/ESP-ParkingValet";
 // key, friendly name, device_class, unit, entity_category, icon
 struct Field { const char* key; const char* name; const char* dclass; const char* unit; const char* ecat; const char* icon; };
 static const Field FIELDS[] = {
-  {"count",      "Cars",        nullptr,           nullptr, nullptr,      "mdi:car"},
-  {"rssi",       "Signal",      "signal_strength", "dBm",   "diagnostic", nullptr},
-  {"ip",         "IP address",  nullptr,           nullptr, "diagnostic", "mdi:ip-network"},
-  {"ssid",       "SSID",        nullptr,           nullptr, "diagnostic", "mdi:wifi"},
-  {"uptime_s",   "Uptime",      "duration",        "s",     "diagnostic", nullptr},
-  {"heap_free",  "Free heap",   "data_size",       "B",     "diagnostic", nullptr},
-  {"psram_free", "Free PSRAM",  "data_size",       "B",     "diagnostic", nullptr},
-  {"roi_count",  "Slots",       nullptr,           nullptr, "diagnostic", "mdi:select-group"},
-  {"mode",       "WiFi mode",   nullptr,           nullptr, "diagnostic", "mdi:access-point"},
-  {"version",    "Firmware",    nullptr,           nullptr, "diagnostic", "mdi:chip"},
-  {"build",      "Build",       nullptr,           nullptr, "diagnostic", "mdi:source-commit"},
-  {"time",       "Last update", "timestamp",       nullptr, "diagnostic", nullptr},
+  // TODO(T6-T10): "count"/"roi_count" rows replaced with curb headline fields in Task C3.5
+  {"count",      "Free spaces",  nullptr,           nullptr, nullptr,      "mdi:car"},
+  {"rssi",       "Signal",       "signal_strength", "dBm",   "diagnostic", nullptr},
+  {"ip",         "IP address",   nullptr,           nullptr, "diagnostic", "mdi:ip-network"},
+  {"ssid",       "SSID",         nullptr,           nullptr, "diagnostic", "mdi:wifi"},
+  {"uptime_s",   "Uptime",       "duration",        "s",     "diagnostic", nullptr},
+  {"heap_free",  "Free heap",    "data_size",       "B",     "diagnostic", nullptr},
+  {"psram_free", "Free PSRAM",   "data_size",       "B",     "diagnostic", nullptr},
+  {"roi_count",  "Cells",        nullptr,           nullptr, "diagnostic", "mdi:select-group"},
+  {"mode",       "WiFi mode",    nullptr,           nullptr, "diagnostic", "mdi:access-point"},
+  {"version",    "Firmware",     nullptr,           nullptr, "diagnostic", "mdi:chip"},
+  {"build",      "Build",        nullptr,           nullptr, "diagnostic", "mdi:source-commit"},
+  {"time",       "Last update",  "timestamp",       nullptr, "diagnostic", nullptr},
 };
 static const int NFIELDS = sizeof(FIELDS) / sizeof(FIELDS[0]);
 
@@ -67,14 +68,16 @@ static String baseTopic()  { return String(s_cfg->mqttBaseTopic[0] ? s_cfg->mqtt
 static String availTopic() { return baseTopic() + "/availability"; }
 
 static String fieldValue(const char* k) {
-  if (!strcmp(k, "count"))      return String(s_last && s_last->valid ? s_last->count : -1);
+  // TODO(T6-T10): "count" -> est_free_spaces and "roi_count" -> cell_count
+  // repointed minimally here so it builds and emits sane values; full repoint in Task C3.5.
+  if (!strcmp(k, "count"))      return String(s_last && s_last->valid ? s_last->est_free_spaces : -1);
   if (!strcmp(k, "rssi"))       return String(WiFi.RSSI());
   if (!strcmp(k, "ip"))         return netGetStatus().ip;
   if (!strcmp(k, "ssid"))       return String(s_cfg->staSsid);
   if (!strcmp(k, "uptime_s"))   return String((uint32_t)(millis() / 1000));
   if (!strcmp(k, "heap_free"))  return String((uint32_t)ESP.getFreeHeap());
   if (!strcmp(k, "psram_free")) return String((uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-  if (!strcmp(k, "roi_count"))  return String(s_cfg->roiCount);
+  if (!strcmp(k, "roi_count"))  return String(s_cfg->cellCount);   // TODO(T6-T10): key rename in C3.5
   if (!strcmp(k, "mode"))       return netIsAP() ? "ap" : "sta";
   if (!strcmp(k, "version"))    return String(PARKINGCAM_VERSION);
   if (!strcmp(k, "build"))      return String(BUILD_GIT_SHA);
@@ -92,16 +95,15 @@ static void addDevice(JsonObject o) {
   dev["cu"]   = GITHUB_URL;
 }
 
-// Cheap hash of bay count + names + enabled, to detect ROI edits and refresh
-// the per-bay HA entities (editing ROIs does not call mqttReconfigure()).
+// Cheap hash of strip count + names, to detect strip edits and refresh HA entities.
+// (Cell count is not hashed here; bay discovery is per-strip in T1.)
 static uint32_t roiSig() {
   uint32_t hsh = 2166136261u;
   auto mix = [&](uint32_t v) { hsh ^= v; hsh *= 16777619u; };
-  mix((uint32_t)s_cfg->roiCount);
-  for (int i = 0; i < s_cfg->roiCount && i < MAX_ROIS; i++) {
-    const Roi& r = s_cfg->rois[i];
-    for (const char* p = r.name; *p; p++) mix((uint8_t)*p);
-    mix(r.enabled ? 1u : 0u);
+  mix((uint32_t)s_cfg->stripCount);
+  for (int i = 0; i < s_cfg->stripCount && i < MAX_STRIPS; i++) {
+    const CurbStrip& s = s_cfg->strips[i];
+    for (const char* p = s.name; *p; p++) mix((uint8_t)*p);
   }
   return hsh;
 }
@@ -120,13 +122,15 @@ static void clearCfg(const char* component, const String& obj) {
   s_mqtt.publish(topic.c_str(), (const uint8_t*)"", 0, true);   // empty retained = remove entity
 }
 
-// Per-bay occupancy binary_sensors + free/occupied selects, with stale cleanup.
+// TODO(T6-T10): per-strip discovery replaces per-bay in Task C3.5. For now
+// we adapt the bay entities to iterate over strips so the code compiles and
+// emits sane HA entities. Full per-cell/strip repoint happens in C3.5.
 static void publishBayDiscovery() {
   if (!s_cfg->mqttDiscovery) return;
   const String base = baseTopic();
   const String avty = availTopic();
-  for (int i = 0; i < s_cfg->roiCount && i < MAX_ROIS; i++) {
-    const char* nm = s_cfg->rois[i].name[0] ? s_cfg->rois[i].name : "Bay";
+  for (int i = 0; i < s_cfg->stripCount && i < MAX_STRIPS; i++) {
+    const char* nm = s_cfg->strips[i].name[0] ? s_cfg->strips[i].name : "Strip";
     {
       JsonDocument d;
       d["name"]    = nm;
@@ -150,11 +154,12 @@ static void publishBayDiscovery() {
       publishCfg("select", String("bay") + i + "_set", d);
     }
   }
-  for (int i = s_cfg->roiCount; i < MAX_ROIS; i++) {   // remove entities for dropped bays
+  // Remove entities for dropped strips (clear up to MAX_STRIPS).
+  for (int i = s_cfg->stripCount; i < MAX_STRIPS; i++) {
     clearCfg("binary_sensor", String("bay") + i);
     clearCfg("select", String("bay") + i + "_set");
   }
-  // Snapshot camera + two control buttons (published once with the bay configs).
+  // Snapshot camera + two control buttons (published once with the strip configs).
   {
     JsonDocument d;
     d["name"]    = "Snapshot";
@@ -188,17 +193,26 @@ static void publishBayDiscovery() {
   }
 }
 
-// Per-bay occupancy state (retained) + initial idle select state.
+// TODO(T6-T10): publish per-cell/strip state in Task C3.5.
+// For now publish per-strip occupancy as a best-effort placeholder.
 static void publishBayState() {
   const String base = baseTopic();
-  for (int i = 0; i < s_cfg->roiCount && i < MAX_ROIS; i++) {
-    bool occ = (s_last && s_last->valid && i < s_last->n) ? s_last->slots[i].occupied : false;
+  for (int i = 0; i < s_cfg->stripCount && i < MAX_STRIPS; i++) {
+    // Use the first cell of this strip as the strip-level occupancy indicator.
+    bool occ = false;
+    if (s_last && s_last->valid) {
+      for (int j = 0; j < s_last->nCells && j < MAX_CELLS; j++) {
+        // strip membership is in cfg.cells[j].strip (CurbCell), not CellResult
+        if (s_cfg->cells[j].strip == (uint8_t)i) { occ = s_last->cells[j].occupied; break; }
+      }
+    }
     s_mqtt.publish((base + "/bay/" + i + "/state").c_str(), occ ? "ON" : "OFF", true);
   }
 }
+
 static void publishBayIdle() {
   const String base = baseTopic();
-  for (int i = 0; i < s_cfg->roiCount && i < MAX_ROIS; i++)
+  for (int i = 0; i < s_cfg->stripCount && i < MAX_STRIPS; i++)
     s_mqtt.publish((base + "/bay/" + i + "/setstate").c_str(), SETSTATE_IDLE, true);
 }
 
@@ -247,14 +261,14 @@ static void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
   if (t == base + "/cmd/photo") { s_photoReq = true; return; }
   if (t == base + "/cmd/mark_all_free") { cvRecalibrate(-1); return; }
 
-  // base/bay/<i>/set
+  // base/bay/<i>/set — strip-level control (full per-cell repoint in Task C3.5)
   String pre = base + "/bay/";
   if (t.startsWith(pre) && t.endsWith("/set")) {
     String idx = t.substring(pre.length(), t.length() - 4);
     if (idx.length() == 0) return;
     for (size_t k = 0; k < idx.length(); k++) if (!isDigit(idx[k])) return;
     int i = idx.toInt();
-    if (i < 0 || i >= MAX_ROIS) return;
+    if (i < 0 || i >= MAX_STRIPS) return;
     if (!strcmp(body, "free"))          cvRecalibrate(i);
     else if (!strcmp(body, "occupied")) cvMarkOccupied(i);
     else return;   // ignore the "-" idle echo
@@ -291,7 +305,7 @@ static bool connectNow() {
   return ok;
 }
 
-void mqttBegin(const Config* cfg, const CvResult* last) {
+void mqttBegin(const Config* cfg, const CurbResult* last) {
   s_cfg = cfg; s_last = last;
   if (cfg->mqttTls) {
     if (cfg->mqttTlsInsecure) s_tls.setInsecure();
@@ -359,7 +373,7 @@ void mqttLoop() {
   }
   s_mqtt.loop();
 
-  // Refresh per-bay HA entities when the ROI set/name/enable changes.
+  // Refresh per-strip HA entities when the strip set/name changes.
   uint32_t sig = roiSig();
   if (sig != s_roiSig) { s_roiSig = sig; publishBayDiscovery(); publishBayState(); publishBayIdle(); }
 

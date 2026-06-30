@@ -29,9 +29,9 @@
 #define BUILD_GIT_SHA "dev"
 #endif
 
-static Config   cfg;
-static CvEngine cvEngine;
-static CvResult lastResult;
+static Config     cfg;
+static CvEngine   cvEngine;
+static CurbResult lastResult;
 
 static int      lastSentCount   = -1;   // -1 = not initialized (don't send on boot)
 static uint32_t lastCaptureMs   = 0;
@@ -66,18 +66,18 @@ void otaMarkValidIfPending() {
 // --- CV baseline persistence (survive reboots) ----------------------------
 // The relative-mode empty baseline lives only in RAM and is re-seeded from the
 // first frame after boot. Since this device reboots itself (offline watchdog,
-// OTA), a bay occupied at reboot would seed an "occupied" baseline and read empty
-// until it turns over. We snapshot the baselines to NVS while running and restore
-// them on boot. Writes are throttled and change-gated, so a stable lot writes
-// nothing and flash wear stays bounded.
+// OTA), a cell occupied at reboot would seed an "occupied" baseline and read
+// empty until it turns over. We snapshot the baselines to NVS while running
+// and restore them on boot. Writes are throttled and change-gated, so a stable
+// scene writes nothing and flash wear stays bounded.
 static const uint32_t CV_SAVE_INTERVAL_MS = 5UL * 60UL * 1000UL;
-static CvPersist s_cvSaved;              // last blob written (for change detection)
-static bool      s_cvSavedValid = false;
-static uint32_t  s_cvLastCheckMs = 0;
+static CurbPersist s_cvSaved;              // last blob written (for change detection)
+static bool        s_cvSavedValid = false;
+static uint32_t    s_cvLastCheckMs = 0;
 
-static bool cvStateDiffers(const CvPersist& a, const CvPersist& b) {
-  if (a.roiSig != b.roiSig || a.roiCount != b.roiCount) return true;
-  for (int i = 0; i < MAX_ROIS; i++) {
+static bool cvStateDiffers(const CurbPersist& a, const CurbPersist& b) {
+  if (a.geomSig != b.geomSig || a.cellCount != b.cellCount) return true;
+  for (int i = 0; i < MAX_CELLS; i++) {
     if (a.committed[i] != b.committed[i] || a.baselineInit[i] != b.baselineInit[i]) return true;
     float d = a.baselineEdge[i] - b.baselineEdge[i]; if (d < 0) d = -d;
     float ref = a.baselineEdge[i] > 1.0f ? a.baselineEdge[i] : 1.0f;
@@ -89,33 +89,28 @@ static bool cvStateDiffers(const CvPersist& a, const CvPersist& b) {
 // Snapshot the engine baselines and write them to NVS, but only when they moved
 // since the last save (force=true overrides, for a deliberate user action).
 static void cvStatePersist(bool force) {
-  CvPersist cur; cvEngine.snapshotState(cur);
+  CurbPersist cur; cvEngine.snapshotState(cur);
   if (!force && s_cvSavedValid && !cvStateDiffers(s_cvSaved, cur)) return;
   if (cvStateSave(cur)) { s_cvSaved = cur; s_cvSavedValid = true; }
 }
 
-// "Mark empty now": clear committed occupancy and re-arm a bay's adaptive empty
-// baseline so it re-seeds from the next frame. index < 0 does every bay; a
-// specific index does just that one, so a single empty bay can be calibrated
-// without the whole lot being empty at once. Press it (web action) when the
-// target bay(s) are genuinely empty to instantly calibrate the relative-mode
-// baseline instead of waiting for the EMA to converge — and to fix the cold-start
-// case where a car parked at boot seeds the baseline high. Runs on the loopTask
-// (via the web handler), so it never races analyze().
+// "Mark empty now": clear committed occupancy and re-arm a cell's adaptive empty
+// baseline so it re-seeds from the next frame. index < 0 does every cell; a
+// specific index does just that one, so a single empty cell can be calibrated
+// without the whole strip being empty at once.
 void cvRecalibrate(int index) {
   cvEngine.recalibrate(index);
   cvStatePersist(true);   // persist immediately so the recalibration survives a reboot
   if (index < 0) log_i("CV recalibrated: all baselines re-seed from the current view");
-  else           log_i("CV recalibrated: bay %d re-seeds its baseline from the current view", index);
+  else           log_i("CV recalibrated: cell %d re-seeds its baseline from the current view", index);
 }
 
-// "Mark occupied now": force one bay to read occupied (relative mode re-bases its
-// baseline so the reading sticks and then self-heals when the car leaves). Fixes
-// a bay that seeded its baseline while occupied. Same loopTask context as above.
+// "Mark occupied now": force one cell to read occupied (relative mode re-bases
+// its baseline so the reading sticks and then self-heals when the space clears).
 void cvMarkOccupied(int index) {
   cvEngine.markOccupied(index);
   cvStatePersist(true);
-  log_i("CV: bay %d forced occupied (baseline re-based for relative mode)", index);
+  log_i("CV: cell %d forced occupied (baseline re-based for relative mode)", index);
 }
 
 static void hangWatchdogTask(void*) {
@@ -146,7 +141,9 @@ static void ledUpdate() {
   }
 }
 
-// Decide whether this committed count warrants a webhook, per the trigger rule.
+// Decide whether this committed metric warrants a webhook, per the trigger rule.
+// TODO(T6-T10): triggerThreshold units redefined in Task C3.4; currently compared
+// against est_free_spaces as a best-effort placeholder.
 static bool shouldSend(int prev, int count) {
   if (cfg.triggerMode == TRIG_THRESHOLD) {
     int N = cfg.triggerThreshold;
@@ -155,16 +152,17 @@ static bool shouldSend(int prev, int count) {
   return count != prev;                  // TRIG_ANY_CHANGE
 }
 
-static int postEvent(const char* event, camera_fb_t* fb, const CvResult& r, int count, int prev) {
-  bool slots[MAX_ROIS];
-  for (int i = 0; i < r.n && i < MAX_ROIS; i++) slots[i] = r.slots[i].occupied;
-  int code = netSendEvent(cfg, event, fb->buf, fb->len, count, prev, slots, r.n);  // live -> queued=false
+static int postEvent(const char* event, camera_fb_t* fb, const CurbResult& r, int count, int prev) {
+  // TODO(T6-T10): full curb repoint - replace count/slots with curb fields in Task C3.4
+  bool slots[MAX_CELLS];
+  for (int i = 0; i < r.nCells && i < MAX_CELLS; i++) slots[i] = r.cells[i].occupied;
+  int code = netSendEvent(cfg, event, fb->buf, fb->len, count, prev, slots, r.nCells);  // live -> queued=false
   webNoteSend(event, count, code);
   lastSendMs = millis();
   return code;
 }
 
-static void maybeSend(camera_fb_t* fb, const CvResult& r) {
+static void maybeSend(camera_fb_t* fb, const CurbResult& r) {
   if (!r.valid) return;
   uint32_t now = millis();
 
@@ -172,39 +170,38 @@ static void maybeSend(camera_fb_t* fb, const CvResult& r) {
   if (cfg.whEnabled && cfg.heartbeatIntervalS > 0 &&
       now - lastHeartbeatMs >= cfg.heartbeatIntervalS * 1000UL) {
     lastHeartbeatMs = now;
-    postEvent("heartbeat", fb, r, r.count, lastSentCount < 0 ? r.count : lastSentCount);
+    postEvent("heartbeat", fb, r, r.est_free_spaces,
+              lastSentCount < 0 ? r.est_free_spaces : lastSentCount);
   }
 
   // First valid frame: adopt as baseline silently.
-  if (lastSentCount < 0) { lastSentCount = r.count; return; }
+  if (lastSentCount < 0) { lastSentCount = r.est_free_spaces; return; }
 
-  if (!cfg.whEnabled) { lastSentCount = r.count; return; }
-  if (!shouldSend(lastSentCount, r.count)) return;
+  if (!cfg.whEnabled) { lastSentCount = r.est_free_spaces; return; }
+  if (!shouldSend(lastSentCount, r.est_free_spaces)) return;
   if (now - lastSendMs < cfg.minSendIntervalMs) return;   // rate-limited; retry next cycle
 
   // Deliver the change. When the link is up and nothing is already queued, send
   // it live WITH the freshly-captured photo (queued=false) — the common online
   // case. Fall back to the durable spool only when offline, when a backlog is
   // still draining (so we stay in order behind it), or when the live POST fails.
-  // A spooled entry is count-only in SPOOL_COUNT mode and replayed as queued=true,
-  // so routing live sends through it stripped the photo and mislabelled them as
-  // backlog. With the spool off entirely, use the legacy live best-effort send.
   if (cfg.spoolMode != SPOOL_OFF) {
-    bool slots[MAX_ROIS];
-    for (int i = 0; i < r.n && i < MAX_ROIS; i++) slots[i] = r.slots[i].occupied;
+    // TODO(T6-T10): full curb repoint - replace slots with curb fields in Task C3.4
+    bool slots[MAX_CELLS];
+    for (int i = 0; i < r.nCells && i < MAX_CELLS; i++) slots[i] = r.cells[i].occupied;
     uint32_t qCount, qBytes; spoolStats(qCount, qBytes);
     bool sentLive = false;
     if (WiFi.status() == WL_CONNECTED && qCount == 0) {
-      int code = postEvent("count_changed", fb, r, r.count, lastSentCount);  // live, with photo
+      int code = postEvent("count_changed", fb, r, r.est_free_spaces, lastSentCount);  // live, with photo
       sentLive = (code >= 200 && code < 400);
     }
     if (!sentLive)
-      spoolEnqueue("count_changed", fb->buf, fb->len, r.count, lastSentCount, slots, r.n);
+      spoolEnqueue("count_changed", fb->buf, fb->len, r.est_free_spaces, lastSentCount, slots, r.nCells);
     lastSendMs = now;
   } else {
-    postEvent("count_changed", fb, r, r.count, lastSentCount);
+    postEvent("count_changed", fb, r, r.est_free_spaces, lastSentCount);
   }
-  lastSentCount = r.count;
+  lastSentCount = r.est_free_spaces;
 }
 
 // --- stats / telemetry webhook ---------------------------------------------
@@ -225,8 +222,9 @@ static void buildStatsJson(String& out) {
   d["heap_free"]    = (uint32_t)ESP.getFreeHeap();
   d["psram_free"]   = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   d["reset_reason"] = (int)esp_reset_reason();
-  d["roi_count"]    = cfg.roiCount;
-  d["count"]        = lastResult.valid ? lastResult.count : -1;
+  // TODO(T6-T10): rename/repoint stats keys in Task C3.4
+  d["cell_count"]   = cfg.cellCount;   // was roi_count
+  d["count"]        = lastResult.valid ? lastResult.est_free_spaces : -1;
   if (lastResult.valid) {
     d["cv_ms"]    = lastResult.tookMs;
     d["analysis"] = String(lastResult.decW) + "x" + String(lastResult.decH);
@@ -268,8 +266,8 @@ void setup() {
   bool forcedAp = buttonsConsumeForcedAp();
 
   configLoad(cfg);
-  log_i("config: host=%s sta='%s' rois=%d webhook=%s",
-        cfg.hostname, cfg.staSsid, cfg.roiCount, cfg.whEnabled ? "on" : "off");
+  log_i("config: host=%s sta='%s' cells=%d webhook=%s",
+        cfg.hostname, cfg.staSsid, cfg.cellCount, cfg.whEnabled ? "on" : "off");
 
 #ifdef PARKINGCAM_BUTTON_DISCOVERY
   buttonsDiscoveryScan();
@@ -284,11 +282,11 @@ void setup() {
   cvEngine.begin(&cfg);
   lastResult.valid = false;
 
-  // Restore the per-bay baselines learned before the last reboot, so occupied
-  // bays don't read empty until they turn over. Ignored (seed live) on first boot
-  // or after an ROI geometry change.
+  // Restore the per-cell baselines learned before the last reboot, so occupied
+  // cells don't read empty until they turn over. Ignored (seed live) on first
+  // boot or after a geometry change.
   {
-    CvPersist blob;
+    CurbPersist blob;
     if (cvStateLoad(blob) && cvEngine.restoreState(blob)) {
       s_cvSaved = blob; s_cvSavedValid = true;
       log_i("CV baselines restored from NVS (survived reboot)");
@@ -353,12 +351,16 @@ void loop() {
     lastCaptureMs = now;
     camera_fb_t* fb = esp_camera_fb_get();
     if (fb) {
-      CvResult r;
+      CurbResult r;
       if (cvEngine.analyze(fb->buf, fb->len, fb->width, fb->height, r)) {
         lastResult = r;
         captureMaybeLog(cfg, r);
         if (!netIsAP()) maybeSend(fb, r);   // only act on triggers when on the real network
-        if (r.valid && r.count != lastMqttCount) { lastMqttCount = r.count; mqttPublishNow(); }
+        // TODO(T6-T10): MQTT trigger on curb headline change in Task C3.4
+        if (r.valid && r.est_free_spaces != lastMqttCount) {
+          lastMqttCount = r.est_free_spaces;
+          mqttPublishNow();
+        }
       }
       esp_camera_fb_return(fb);
     }

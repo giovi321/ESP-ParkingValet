@@ -28,12 +28,12 @@
 extern int sendStatsNow();   // defined in main.cpp
 extern void noteLoopAlive();  // hang-watchdog heartbeat (main.cpp)
 extern void otaMarkValidIfPending();  // confirm a pending OTA image before a voluntary reboot (main.cpp)
-extern void cvRecalibrate(int index); // "mark empty now": re-seed baselines (index<0 = all bays) (main.cpp)
-extern void cvMarkOccupied(int index); // "mark occupied now": force one bay occupied (relative re-base) (main.cpp)
+extern void cvRecalibrate(int index); // "mark empty now": re-seed baselines (index<0 = all cells) (main.cpp)
+extern void cvMarkOccupied(int index); // "mark occupied now": force one cell occupied (relative re-base) (main.cpp)
 
-static WebServer  server(80);
-static Config*    g_cfg  = nullptr;
-static CvResult*  g_last = nullptr;
+static WebServer   server(80);
+static Config*     g_cfg  = nullptr;
+static CurbResult* g_last = nullptr;
 
 static bool     s_rebootPending = false;
 static uint32_t s_rebootAt = 0;
@@ -117,30 +117,33 @@ static void handleState() {
 
   JsonObject cv = doc["cv"].to<JsonObject>();
   cv["valid"]  = g_last->valid;
-  cv["count"]  = g_last->count;
+  // TODO(T6-T10): replace cv["count"] with curb headline in Task C3.3
+  cv["count"]  = g_last->est_free_spaces;
   cv["decW"]   = g_last->decW;
   cv["decH"]   = g_last->decH;
   cv["tookMs"] = g_last->tookMs;
 
+  // TODO(T6-T10): full curb cells/strips state emitted in Task C3.3.
+  // For now emit per-cell data using the new struct so the UI has something.
   JsonArray slots = doc["slots"].to<JsonArray>();
-  for (int i = 0; i < g_cfg->roiCount && i < MAX_ROIS; i++) {
+  for (int i = 0; i < g_cfg->cellCount && i < MAX_CELLS; i++) {
     JsonObject o = slots.add<JsonObject>();
-    const Roi& r = g_cfg->rois[i];
-    o["name"]    = r.name;
-    o["enabled"] = r.enabled;
-    JsonArray pts = o["points"].to<JsonArray>();
-    for (int j = 0; j < r.nPoints && j < MAX_POLY; j++) {
-      JsonObject p = pts.add<JsonObject>();
-      p["x"] = r.px[j]; p["y"] = r.py[j];
-    }
-    if (g_last->valid && i < g_last->n) {
-      const SlotResult& sr = g_last->slots[i];
-      o["edge"]         = sr.edge;
-      o["meanI"]        = sr.meanI;
-      o["baselineEdge"] = sr.baselineEdge;
-      o["threshold"]    = sr.threshold;
-      o["occupied"]     = sr.occupied;
-      o["raw"]          = sr.rawOccupied;
+    const CurbCell& cell = g_cfg->cells[i];
+    o["enabled"] = cell.enabled;
+    o["strip"]   = cell.strip;
+    o["lenM"]    = cell.lenM;
+    JsonArray px = o["px"].to<JsonArray>();
+    for (int j = 0; j < 4; j++) px.add(cell.px[j]);
+    JsonArray py = o["py"].to<JsonArray>();
+    for (int j = 0; j < 4; j++) py.add(cell.py[j]);
+    if (g_last->valid && i < g_last->nCells) {
+      const CellResult& cr = g_last->cells[i];
+      o["edge"]         = cr.edge;
+      o["meanI"]        = cr.meanI;
+      o["baselineEdge"] = cr.baselineEdge;
+      o["occupied"]     = cr.occupied;
+      o["raw"]          = cr.rawOccupied;
+      o["inRange"]      = cr.inRange;
     }
   }
 
@@ -263,14 +266,14 @@ static void handleAction() {
   } else if (!strcmp(action, "test_webhook")) {
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) { server.send(503, "application/json", "{\"ok\":false,\"err\":\"no frame\"}"); return; }
-    bool slots[MAX_ROIS];
-    int n = (g_last->valid) ? g_last->n : 0;
-    for (int i = 0; i < n && i < MAX_ROIS; i++) slots[i] = g_last->slots[i].occupied;
-    int code = netSendEvent(*g_cfg, "test", fb->buf, fb->len,
-                            g_last->valid ? g_last->count : 0,
-                            g_last->valid ? g_last->count : 0, slots, n);
+    // TODO(T6-T10): full curb repoint - replace slots with curb fields in Task C3.4
+    bool slots[MAX_CELLS];
+    int n = g_last->valid ? g_last->nCells : 0;
+    for (int i = 0; i < n && i < MAX_CELLS; i++) slots[i] = g_last->cells[i].occupied;
+    int count = g_last->valid ? g_last->est_free_spaces : 0;
+    int code = netSendEvent(*g_cfg, "test", fb->buf, fb->len, count, count, slots, n);
     esp_camera_fb_return(fb);
-    webNoteSend("test", g_last->valid ? g_last->count : 0, code);
+    webNoteSend("test", count, code);
     JsonDocument r; r["ok"] = (code > 0 && code < 400); r["code"] = code;
     String out; serializeJson(r, out);
     server.send(200, "application/json", out);
@@ -289,14 +292,14 @@ static void handleAction() {
     spoolClear();
     server.send(200, "application/json", "{\"ok\":true}");
   } else if (!strcmp(action, "recalibrate")) {
-    int slot = doc["slot"] | -1;   // -1 / absent = all bays; otherwise just that bay
-    if (slot < -1 || slot >= MAX_ROIS) { server.send(400, "application/json", "{\"ok\":false,\"err\":\"bad slot\"}"); return; }
-    cvRecalibrate(slot);           // re-seed empty baseline(s) from the current view (relative occupancy mode)
+    int slot = doc["slot"] | -1;   // -1 / absent = all cells; otherwise just that cell
+    if (slot < -1 || slot >= MAX_CELLS) { server.send(400, "application/json", "{\"ok\":false,\"err\":\"bad slot\"}"); return; }
+    cvRecalibrate(slot);           // re-seed empty baseline(s) from the current view
     server.send(200, "application/json", "{\"ok\":true}");
   } else if (!strcmp(action, "mark_occupied")) {
-    int slot = doc["slot"] | -1;   // single bay only (no "all occupied")
-    if (slot < 0 || slot >= MAX_ROIS) { server.send(400, "application/json", "{\"ok\":false,\"err\":\"bad slot\"}"); return; }
-    cvMarkOccupied(slot);          // force this bay occupied; relative mode re-bases so it sticks
+    int slot = doc["slot"] | -1;   // single cell only (no "all occupied")
+    if (slot < 0 || slot >= MAX_CELLS) { server.send(400, "application/json", "{\"ok\":false,\"err\":\"bad slot\"}"); return; }
+    cvMarkOccupied(slot);          // force this cell occupied; relative mode re-bases so it sticks
     server.send(200, "application/json", "{\"ok\":true}");
   } else {
     server.send(400, "application/json", "{\"ok\":false,\"err\":\"unknown action\"}");
@@ -386,7 +389,7 @@ static void handleNotFound() {
 
 // --- public ----------------------------------------------------------------
 
-void webBegin(Config* cfg, CvResult* last) {
+void webBegin(Config* cfg, CurbResult* last) {
   g_cfg = cfg;
   g_last = last;
 

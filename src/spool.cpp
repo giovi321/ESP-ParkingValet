@@ -158,7 +158,7 @@ void spoolEnqueue(const char* event, const uint8_t* jpg, size_t jpgLen,
     m["ts"]    = (uint32_t)clockEpoch();
     m["iso"]   = clockIso();
     JsonArray sa = m["slots"].to<JsonArray>();
-    for (int i = 0; i < nSlots && i < MAX_ROIS; i++) sa.add(slots[i]);
+    for (int i = 0; i < nSlots && i < MAX_CELLS; i++) sa.add(slots[i]);
     m["img"]   = withImg ? 1 : 0;
     serializeJson(m, out);
   };
@@ -259,8 +259,8 @@ void spoolDrain() {
   const char* iso = m["iso"] | "";
   bool hasImg = (m["img"] | 0) != 0;
 
-  bool slots[MAX_ROIS]; int nSlots = 0;
-  for (JsonVariant v : m["slots"].as<JsonArray>()) { if (nSlots >= MAX_ROIS) break; slots[nSlots++] = v.as<bool>(); }
+  bool slots[MAX_CELLS]; int nSlots = 0;
+  for (JsonVariant v : m["slots"].as<JsonArray>()) { if (nSlots >= MAX_CELLS) break; slots[nSlots++] = v.as<bool>(); }
 
   uint8_t* buf = nullptr;
   if (hasImg && imgLen > 0) {

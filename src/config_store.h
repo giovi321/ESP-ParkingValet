@@ -14,11 +14,11 @@
 // masks them). Enable flash encryption if at-rest protection is required.
 // ---------------------------------------------------------------------------
 
-static const int   MAX_ROIS        = 12;
-static const int   MAX_POLY        = 8;    // max vertices per slot polygon
+static const int   MAX_STRIPS      = 4;    // max traced curb strips
+static const int   MAX_CELLS       = 48;   // total cells across all strips
 static const char* CFG_NAMESPACE   = "parkingcam";
 static const char* CFG_KEY         = "cfg";
-static const int   CONFIG_VERSION  = 1;
+static const int   CONFIG_VERSION  = 2;    // bumped: Roi/rois -> CurbStrip/CurbCell
 
 // Default credentials on a fresh device (forces a change on first login).
 static const char* DEFAULT_ADMIN_USER = "admin";
@@ -33,10 +33,10 @@ enum TriggerMode : uint8_t {
   TRIG_THRESHOLD  = 1,   // send only when the count crosses >= threshold (rising or falling edge)
 };
 
-// Occupancy decision: how a bay's edge energy becomes occupied/empty.
+// Occupancy decision: how a cell's edge energy becomes occupied/empty.
 enum OccupancyMode : uint8_t {
   OCCUPANCY_ABSOLUTE = 0,   // edge vs a fixed threshold (legacy)
-  OCCUPANCY_RELATIVE = 1,   // edge rise above each bay's adaptive empty baseline (lighting-robust)
+  OCCUPANCY_RELATIVE = 1,   // edge rise above each cell's adaptive empty baseline (lighting-robust)
 };
 
 // Offline spool (store & forward): what to persist for each count change.
@@ -51,13 +51,20 @@ enum SpoolBackend : uint8_t {
   SPOOL_BACKEND_FLASH = 1,   // internal flash only
 };
 
-struct Roi {
+// Curb strip: a traced polyline along the kerb, subdivided into cells.
+struct CurbStrip {
   char  name[16];
-  int   nPoints;            // 3..MAX_POLY
-  float px[MAX_POLY];       // normalized [0..1] polygon vertices (survive resolution changes)
-  float py[MAX_POLY];
-  float threshold;          // edge-energy occupancy threshold (0 = use global default)
-  bool  enabled;
+  float realLenM;     // real-world length of the traced stretch (metres) — the metric anchor
+  float realWidthM;   // approx sidewall band height (metres) — diagnostics only
+  int   nCells;       // cells generated for this strip
+};
+
+// Curb cell: one 4-vertex quad within a strip, plus occupancy metadata.
+struct CurbCell {
+  float   px[4], py[4]; // normalized [0..1] quad vertices (host-generated along the strip)
+  float   lenM;         // this cell's ground length (metres); equal within a strip
+  uint8_t strip;        // owning strip index
+  bool    enabled;      // dead-zone mask (driveways/hydrants/blocked areas) + in-range gate
 };
 
 struct Config {
@@ -124,13 +131,13 @@ struct Config {
 
   // --- Trigger logic ---
   uint8_t  triggerMode;      // TriggerMode
-  int      triggerThreshold; // N (for TRIG_THRESHOLD)
+  int      triggerThreshold; // N (for TRIG_THRESHOLD; now compared against a curb metric)
   uint32_t minSendIntervalMs;
   uint32_t heartbeatIntervalS; // 0 = disabled
 
-  // --- CV parameters ---
+  // --- CV parameters (reused per cell) ---
   uint16_t captureIntervalMs;
-  uint8_t  stableFrames;     // debounce: consecutive cycles a slot state must hold
+  uint8_t  stableFrames;     // debounce: consecutive cycles a cell state must hold
   uint8_t  occupancyMode;    // OccupancyMode: 0=absolute edge threshold, 1=relative to empty baseline
   float    edgeThreshold;    // global default edge-energy occupancy threshold (absolute mode)
   float    relDelta;         // relative mode: edge units above the adaptive empty baseline to call occupied
@@ -139,7 +146,7 @@ struct Config {
 
   // --- Occupancy engine + training capture ---
   uint8_t occupancyEngine;   // 0 = edge threshold (legacy), 1 = trained classifier
-  bool    trainCapture;      // log per-bay feature vectors + weak labels for training
+  bool    trainCapture;      // log per-cell feature vectors + weak labels for training
   char    captureUrl[200];
   char    captureAuthHeaderName[48];
   char    captureAuthHeaderValue[200];   // SECRET
@@ -157,9 +164,19 @@ struct Config {
   int  afMode;               // OV5640 autofocus: 0=off/fixed, 1=auto once, 2=continuous
   int16_t tzOffsetMin;       // minutes offset from UTC for the burned-in overlay timestamp (no DST)
 
-  // --- ROIs ---
-  int roiCount;
-  Roi rois[MAX_ROIS];
+  // --- Curb geometry ---
+  CurbStrip strips[MAX_STRIPS];
+  int       stripCount;
+  CurbCell  cells[MAX_CELLS];
+  int       cellCount;
+
+  // --- Curb tunables ---
+  float   carPitchM;       // packed parallel pitch, default 6.0 m (footprint + 1 inter-vehicle gap)
+  float   clearInteriorM;  // interior clearance gap default 1.2 m
+  float   clearEndM;       // end-of-strip clearance, default 1.8 m
+  uint8_t smoothMode;      // 0=none, 1=width-3 median (default 1)
+  float   darkLumaThresh;  // mean-luma below this => low-confidence dark flag (default 40.0)
+  uint8_t pitchLearn;      // 0=off, 1=auto-learn pitch refiner on (default 1)
 };
 
 // Populate cfg with factory defaults.

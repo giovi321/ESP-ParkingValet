@@ -3,53 +3,55 @@
 #include "config_store.h"
 
 // ---------------------------------------------------------------------------
-// On-device classical CV for parking-slot occupancy.
+// On-device classical CV for curb free-space occupancy.
 //
 // Pipeline (all on the ESP32, nothing leaves the device):
 //   JPEG  ->  downscaled RGB565 (img_converters jpg2rgb565)  ->  luma buffer
-//   per ROI: normalized edge/gradient energy (primary, lighting-robust)
-//            + mean intensity (secondary / diagnostics)
-//   occupancy: absolute edge threshold with hysteresis
-//   adaptive empty-edge EMA per slot (diagnostics + threshold auto-suggest)
-//   debounce: a slot's raw state must hold STABLE_FRAMES cycles before it commits
-//   count = number of committed-occupied enabled ROIs
+//   per CurbCell: normalized edge/gradient energy (primary, lighting-robust)
+//                 + mean intensity (secondary / diagnostics)
+//   occupancy: absolute edge threshold with hysteresis, or relative to per-cell
+//              adaptive empty baseline (lighting-robust)
+//   debounce: a cell's raw state must hold stableFrames cycles before commit
+//   headline: free-gap run-length -> free_curb_m / est_free_spaces / can_fit
+//             (full computation in Task C3.1; T1 initializes to zero)
 // ---------------------------------------------------------------------------
 
-struct SlotResult {
-  float edge;          // current normalized edge energy (mean |gradient|)
-  float meanI;         // current mean intensity (0..255)
-  float baselineEdge;  // adaptive EMA of edge energy while empty (diagnostic)
-  float threshold;     // effective threshold used for this slot
-  float feat[16];      // CLF_NFEAT feature vector (see features.h); filled every analyze()
-  float clfScore;      // classifier occupied probability [0,1], or -1 if not computed
-  bool  occupied;      // committed occupancy
-  bool  rawOccupied;   // instantaneous (pre-debounce) decision
+struct CellResult {
+  float feat[16];       // CLF_NFEAT feature vector (capture + diagnostics)
+  float clfScore;       // classifier occupied probability [0,1], or -1 if not computed
+  float edge, meanI, baselineEdge;
+  bool  occupied;       // committed (post-debounce, post-smooth)
+  bool  rawOccupied;    // pre-debounce instantaneous decision
+  bool  inRange;        // false => excluded far/out-of-range cell
 };
 
-struct CvResult {
-  bool       valid;
-  int        count;        // committed occupied slots
-  int        n;            // number of ROIs evaluated
-  int        decW, decH;   // analysis-image dimensions
-  uint32_t   tookMs;
-  SlotResult slots[MAX_ROIS];
+struct CurbResult {
+  bool     valid;
+  int      decW, decH; uint32_t tookMs;
+  int      nCells;
+  CellResult cells[MAX_CELLS];
+  // headline (aggregated across strips, in-range only):
+  float    free_curb_m;
+  float    longest_free_run_m;
+  bool     can_fit;            // longest_free_run_m >= carPitchM - clearInteriorM
+  int      est_free_spaces;
+  float    reliable_range_m;   // total in-range curb length the camera resolves
+  float    occupied_fraction;  // 0..1 over in-range cells
+  bool     dark;               // light-confidence gate tripped
 };
 
-// Per-bay state that must survive a reboot. In relative mode the empty baseline
-// is the live reference the decision subtracts; it lives only in RAM and is
-// re-seeded from the first frame after boot. Because this device reboots itself
-// (offline watchdog / OTA), a bay occupied at reboot would seed an "occupied"
-// baseline and read empty until it turns over. Persisting this blob to NVS and
-// restoring it on boot keeps the learned reference instead. Plain POD: written
-// to NVS verbatim, guarded by magic + the ROI signature (geometry change = drop).
-static const uint16_t CV_PERSIST_MAGIC = 0xCB01;
-struct CvPersist {
+// Per-cell state that must survive a reboot (adaptive baselines).
+// The new magic (0xCB02 vs old 0xCB01) causes old blobs to be silently ignored.
+static const uint16_t CURB_PERSIST_MAGIC = 0xCB02;
+struct CurbPersist {
   uint16_t magic;
-  uint16_t roiCount;
-  uint32_t roiSig;                   // ROI geometry hash; must match to restore
-  float    baselineEdge[MAX_ROIS];
-  uint8_t  baselineInit[MAX_ROIS];
-  uint8_t  committed[MAX_ROIS];
+  uint16_t cellCount;
+  uint32_t geomSig;                 // hash of cell geometry; mismatch drops stale baselines
+  float    baselineEdge[MAX_CELLS];
+  uint8_t  baselineInit[MAX_CELLS];
+  uint8_t  committed[MAX_CELLS];
+  float    carPitchLearned;         // auto-learn refiner state (Task C4.1)
+  uint16_t learnSamples;            // K (gate at >= 30) (Task C4.1)
 };
 
 class CvEngine {
@@ -58,31 +60,27 @@ class CvEngine {
   void begin(const Config* cfg);
 
   // Analyze one JPEG frame. srcW/srcH are the JPEG dimensions (fb->width/height).
-  // Updates internal per-slot state and fills out. Returns false on decode error.
-  bool analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CvResult& out);
+  // Updates internal per-cell state and fills out. Returns false on decode error.
+  bool analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbResult& out);
 
-  // Forget per-slot debounce/baseline state (call when ROIs change).
+  // Forget per-cell debounce/baseline state (call when geometry changes).
   void reset();
 
-  // Re-arm one bay's empty baseline (index < 0 = all bays): clear its committed
-  // state and force the baseline to re-seed from the next frame. Backs the
-  // per-bay "mark empty now" action, so a single empty bay can be calibrated
-  // without needing the whole lot empty at once.
+  // Re-arm one cell's empty baseline (index < 0 = all cells): clear its committed
+  // state and force the baseline to re-seed from the next frame.
   void recalibrate(int index);
 
-  // Force one bay (index >= 0) to read occupied now. The inverse of "mark empty":
-  // in relative mode it lowers the bay's baseline one entry-band below its current
-  // edge so the live metric sits at the occupied threshold — fixing a bay that
-  // seeded its baseline while occupied and reads empty. Self-heals: once the car
-  // leaves, the edge drops below the re-based reference and the EMA relearns the
-  // true empty level. (In absolute mode it just commits occupied, best-effort.)
+  // Force one cell (index >= 0) to read occupied now. The inverse of recalibrate:
+  // in relative mode it lowers the cell's baseline so the live metric sits at the
+  // occupied threshold — fixing a cell that seeded while occupied. Self-heals once
+  // the curb clears. (In absolute mode it just commits occupied, best-effort.)
   void markOccupied(int index);
 
-  // Serialize / restore the per-bay baseline state for NVS persistence. restore
-  // applies only when the stored ROI signature matches the live geometry (else it
-  // returns false and the engine seeds live as before).
-  void snapshotState(CvPersist& out) const;
-  bool restoreState(const CvPersist& in);
+  // Serialize / restore the per-cell baseline state for NVS persistence. restore
+  // applies only when the stored geometry signature matches the live geometry
+  // (else returns false and the engine seeds live as before).
+  void snapshotState(CurbPersist& out) const;
+  bool restoreState(const CurbPersist& in);
 
  private:
   const Config* _cfg = nullptr;
@@ -92,15 +90,15 @@ class CvEngine {
   uint8_t* _rgb  = nullptr;
   int _decW = 0, _decH = 0;
 
-  // per-slot persistent state
-  bool     _committed[MAX_ROIS];
-  bool     _lastRaw[MAX_ROIS];
-  uint16_t _stableCnt[MAX_ROIS];
-  float    _baselineEdge[MAX_ROIS];
-  bool     _baselineInit[MAX_ROIS];
-  float    _lastEdge[MAX_ROIS];        // most recent per-bay edge (for markOccupied)
+  // per-cell persistent state
+  bool     _committed[MAX_CELLS];
+  bool     _lastRaw[MAX_CELLS];
+  uint16_t _stableCnt[MAX_CELLS];
+  float    _baselineEdge[MAX_CELLS];
+  bool     _baselineInit[MAX_CELLS];
+  float    _lastEdge[MAX_CELLS];    // most recent per-cell edge (for markOccupied)
 
-  uint32_t _roiSig = 0;   // signature of current ROI set, to detect changes
+  uint32_t _roiSig = 0;   // signature of current cell geometry, to detect changes
 
   bool ensureBuffers(int w, int h);
   uint32_t roiSignature() const;
