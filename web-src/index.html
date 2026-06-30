@@ -69,9 +69,8 @@
   /* generated cell quads */
   #ovl polygon.cell{fill:rgba(46,204,113,.15);stroke:var(--ok);stroke-width:1.5;vector-effect:non-scaling-stroke;cursor:pointer}
   #ovl polygon.dead-zone{fill:rgba(91,107,122,.12);stroke:var(--off);stroke-width:1.5;stroke-dasharray:4 3;vector-effect:non-scaling-stroke;cursor:pointer}
-  #ovl polygon.out-of-range{fill:rgba(255,176,46,.08);stroke:var(--warn);stroke-width:1;stroke-dasharray:2 4;vector-effect:non-scaling-stroke;pointer-events:none}
-  #ovl polygon.free-run{fill:rgba(46,204,113,.28);stroke:var(--ok);stroke-width:2;vector-effect:non-scaling-stroke}
-  #ovl polygon.occ-run{fill:rgba(255,91,91,.22);stroke:var(--busy);stroke-width:2;vector-effect:non-scaling-stroke}
+  #ovl polygon.free-run{fill:rgba(46,204,113,.28);stroke:var(--ok);stroke-width:2;vector-effect:non-scaling-stroke;cursor:pointer}
+  #ovl polygon.occ-run{fill:rgba(255,91,91,.22);stroke:var(--busy);stroke-width:2;vector-effect:non-scaling-stroke;cursor:pointer}
   /* strip polylines + vertex handles */
   #ovl polyline.strip-trace{fill:none;stroke:var(--accent);stroke-width:2;stroke-dasharray:6 3;vector-effect:non-scaling-stroke;pointer-events:none}
   #ovl circle.sp{fill:var(--accent);stroke:#fff;stroke-width:1.5;vector-effect:non-scaling-stroke;cursor:grab}
@@ -91,7 +90,6 @@
   .cell-chip.c-free{border-color:var(--ok);color:var(--ok)}
   .cell-chip.c-occ{border-color:var(--busy);color:var(--busy)}
   .cell-chip.c-dead{border-color:var(--off);color:var(--off);opacity:.7}
-  .cell-chip.c-oor{border-color:var(--warn);color:var(--warn);opacity:.6;cursor:default}
   .kv{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:13px}
   .kv span:first-child{color:var(--muted)}
   .banner{background:#3a2e12;border:1px solid #5b4a1f;color:#ffd98a;padding:10px 12px;
@@ -482,9 +480,9 @@ const api = (p,o) => q(()=> fetchT(p,o).then(r => r.ok ? r.json() : r.json().cat
 let cfg={}, st={};
 // strips: [{name,realLenM,realWidthM,pts:[{x,y}],widthPx}]  pts & widthPx are session-only (UI)
 let strips=[];
-// cells: flat across all strips: [{px:[4],py:[4],lenM,strip,enabled,_oor}]
+// cells: flat across all strips: [{px:[4],py:[4],lenM,strip,enabled}]
 let cells=[];
-let cellLenM=2.0;            // target ground pitch (UI-only; drives nCells in layoutCells)
+let cellLenM=parseFloat(localStorage.getItem("curbCellLenM")||"2.0");
 let freeze=false, dirty=false, activeTab="live";
 let activeStripIdx=-1, tracingActive=false;
 const MAX_STRIPS=4;
@@ -569,19 +567,19 @@ async function loadCfg(){
     // Rebuild cells from cfg (geometry is stored in cfg.cells; polyline pts are session-only)
     cells = (cfg.cells||[]).map(c=>({
       px: c.px||[], py: c.py||[], lenM: c.lenM||0,
-      strip: c.strip||0, enabled: c.enabled!==false,
-      _oor: false  // oor distinction is session-only; after reload all disabled = user-disabled
+      strip: c.strip||0, enabled: c.enabled!==false
     }));
     // Rebuild strips metadata (no pts — user must re-trace to reshape a strip)
     const cfgStrips = cfg.strips||[];
     // Only rebuild if strips array is empty (don't wipe a fresh tracing session)
     if(strips.length===0){
+      const _savedWpx=parseInt(localStorage.getItem("curbWidthPx")||"0",10);
       strips = cfgStrips.map((s,i)=>({
         name: s.name||("S"+(i+1)),
         realLenM: s.realLenM||10,
         realWidthM: s.realWidthM||2.5,
         pts: [],
-        widthPx: Math.max(10, Math.round(vbW*0.07))
+        widthPx: _savedWpx||Math.max(10,Math.round(vbW*0.07))
       }));
     }
     renderStripList();
@@ -609,16 +607,6 @@ async function loadCfg(){
 function layoutCells(polyline, widthPx, realLenM, gTargetM, stripIndex){
   if(polyline.length<2) return [];
 
-  // Arc lengths of each polyline segment
-  const sArcs=[];
-  let tArc=0;
-  for(let i=1;i<polyline.length;i++){
-    const dx=polyline[i].x-polyline[i-1].x, dy=polyline[i].y-polyline[i-1].y;
-    const d=Math.sqrt(dx*dx+dy*dy);
-    sArcs.push(d); tArc+=d;
-  }
-  if(tArc<1) return [];
-
   // Number of cells; clamp nCells to at least 1
   const nCells=Math.max(1,Math.round(realLenM/gTargetM));
   const lenM=realLenM/nCells;
@@ -627,14 +615,15 @@ function layoutCells(polyline, widthPx, realLenM, gTargetM, stripIndex){
   const yFirst=polyline[0].y, yLast=polyline[polyline.length-1].y;
   const pts=yFirst>=yLast ? polyline : [...polyline].reverse();
 
-  // Recompute sArcs for the (possibly reversed) pts
-  const sa=[], sa2=[];
+  // Arc lengths on the (possibly reversed) pts — computed once
+  const sa=[];
   let ta=0;
   for(let i=1;i<pts.length;i++){
     const dx=pts[i].x-pts[i-1].x, dy=pts[i].y-pts[i-1].y;
     const d=Math.sqrt(dx*dx+dy*dy);
     sa.push(d); ta+=d;
   }
+  if(ta<1) return [];
 
   // Linear ramp: near cell gets (1+R)×avg arc, far cell gets (1-R)×avg arc
   const R=0.45;
@@ -688,14 +677,15 @@ function layoutCells(polyline, widthPx, realLenM, gTargetM, stripIndex){
       {x:s1.x-p1.x*hw, y:s1.y-p1.y*hw}
     ];
     // Usable-range gate: cells whose arc-length on the image is < 7 px
-    // are too small to be reliable (far end of fisheye range)
-    const oor=cellArcs[i]<7;
+    // are too small to be reliable (far end of fisheye range) — drop them.
+    // The cell array IS the reliable range; the strip visually ends where cells stop.
+    arcPos=arcEnd;
+    if(cellArcs[i]<7) continue;
     result.push({
       px: quad.map(p=>p.x/vbW),
       py: quad.map(p=>p.y/vbH),
-      lenM, strip:stripIndex, enabled:!oor, _oor:oor
+      lenM, strip:stripIndex, enabled:true
     });
-    arcPos=arcEnd;
   }
   return result;
 }
@@ -716,8 +706,7 @@ function renderOverlay(){
     // Live occupancy (wired now; live data flows after T8)
     const lv=st.cells&&st.cells[i];
     let cls;
-    if(c._oor)          cls="out-of-range";
-    else if(!c.enabled) cls="dead-zone";
+    if(!c.enabled)      cls="dead-zone";
     else if(lv)         cls=lv.occupied?"occ-run":"free-run";
     else                cls="cell";
     const pts=c.px.map((x,j)=>(x*vbW).toFixed(1)+","+(c.py[j]*vbH).toFixed(1)).join(" ");
@@ -767,7 +756,7 @@ function renderStripList(){
             onchange="strips[${i}].realWidthM=parseFloat(this.value)||2.5"></div>
         <div><label>Width (px)</label>
           <input type="number" value="${str.widthPx||40}" step="2" min="4"
-            onchange="strips[${i}].widthPx=parseInt(this.value)||40;dirty=true;renderOverlay()"></div>
+            onchange="strips[${i}].widthPx=parseInt(this.value)||40;localStorage.setItem('curbWidthPx',strips[${i}].widthPx);dirty=true;renderOverlay()"></div>
       </div>
       <div class="btns" style="margin-top:6px">
         <button class="ghost sm" onclick="startTrace(${i})">Trace</button>
@@ -795,12 +784,11 @@ function renderCellTable(){
     byStrip[si].forEach(({cell,i})=>{
       const lv=st.cells&&st.cells[i];
       let cls, sym;
-      if(cell._oor){  cls="c-oor"; sym="OOR"; }
-      else if(!cell.enabled){ cls="c-dead"; sym="✕"; }
+      if(!cell.enabled){ cls="c-dead"; sym="✕"; }
       else if(lv&&lv.occupied){ cls="c-occ"; sym="●"; }
       else if(lv&&!lv.occupied){ cls="c-free"; sym="○"; }
       else { cls=""; sym="—"; }
-      html+='<div class="cell-chip '+cls+'" onclick="toggleCell('+i+')" title="Cell '+(i+1)+' · '+cell.lenM.toFixed(1)+'m · strip '+si+(cell._oor?' · out of range':'')+((!cell.enabled&&!cell._oor)?' · dead zone':'')+'">'+(i+1)+' '+sym+'</div>';
+      html+='<div class="cell-chip '+cls+'" onclick="toggleCell('+i+')" title="Cell '+(i+1)+' · '+cell.lenM.toFixed(1)+'m · strip '+si+(!cell.enabled?' · dead zone':'')+'">'+(i+1)+' '+sym+'</div>';
     });
     html+='</div></div>';
   });
@@ -831,7 +819,6 @@ function removeStrip(si){
 }
 function toggleCell(i){
   if(!cells[i]) return;
-  if(cells[i]._oor){ toast("Out-of-range cell — cannot enable",true); return; }
   cells[i].enabled=!cells[i].enabled;
   dirty=true; renderOverlay(); renderCellTable();
 }
@@ -839,21 +826,25 @@ function toggleCell(i){
 // ---- Strip/cell button handlers ----------------------------------------
 $("#addStrip").onclick=()=>{
   if(strips.length>=MAX_STRIPS){ toast("Max "+MAX_STRIPS+" strips",true); return; }
+  const _wpx=parseInt(localStorage.getItem("curbWidthPx")||"0",10);
   strips.push({name:"S"+(strips.length+1), realLenM:20, realWidthM:2.5,
-    pts:[], widthPx:Math.max(10,Math.round(vbW*0.07))});
+    pts:[], widthPx:_wpx||Math.max(10,Math.round(vbW*0.07))});
   dirty=true; renderStripList();
 };
 
 $("#genCells").onclick=()=>{
   const pitch=parseFloat($("#cellLenM").value);
   cellLenM=isNaN(pitch)||pitch<0.1?2.0:pitch;
+  localStorage.setItem("curbCellLenM",cellLenM);
   let newCells=[];
   let ok=true;
+  const shortStrips=[];
   strips.forEach((str,si)=>{
-    if(str.pts.length<2){ toast("Strip "+str.name+" needs ≥ 2 points",true); ok=false; return; }
+    if(str.pts.length<2){ shortStrips.push(str.name); ok=false; return; }
     const gen=layoutCells(str.pts, str.widthPx||40, str.realLenM, cellLenM, si);
     newCells=newCells.concat(gen);
   });
+  if(shortStrips.length) toast("Need ≥ 2 pts: "+shortStrips.join(", "),true);
   if(!ok && newCells.length===0) return;
   cells=newCells;
   dirty=true; renderOverlay(); renderCellTable();
@@ -866,16 +857,17 @@ $("#saveStrips").onclick=async()=>{
     name:str.name, realLenM:str.realLenM, realWidthM:str.realWidthM,
     nCells:cells.filter(c=>c.strip===i).length
   }));
-  // Cells payload: oor cells are saved as disabled (enabled:false)
   const cellsPayload=cells.map(c=>({
-    px:c.px, py:c.py, lenM:c.lenM, strip:c.strip,
-    enabled: c.enabled && !c._oor
+    px:c.px, py:c.py, lenM:c.lenM, strip:c.strip, enabled:c.enabled
   }));
-  try{
-    await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({strips:stripsPayload, cells:cellsPayload})});
-    dirty=false; toast("Strips & cells saved"); await loadCfg();
-  }catch(e){ toast("Save failed",true); }
+  const body=JSON.stringify({strips:stripsPayload, cells:cellsPayload});
+  for(let attempt=1;attempt<=3;attempt++){
+    try{
+      await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body});
+      dirty=false; toast("Strips & cells saved"); await loadCfg(); return;
+    }catch(e){ if(attempt<3) await new Promise(res=>setTimeout(res,300)); }
+  }
+  toast("Save failed",true);
 };
 
 $("#markAllEmpty").onclick=async()=>{
@@ -959,7 +951,7 @@ $("#testMqtt").onclick=async()=>{ try{ const r=await api("/api/action",{method:"
 $("#saveImage").onclick=()=>save(["framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode","tzOffsetMin"]);
 $("#focusNow").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"af_focus"})}); toast(r.ok?"Focusing…":"AF unavailable",!r.ok);}catch(e){toast("AF failed",true);} };
 $("#recalibrate").onclick=async()=>{ if(!confirm("Snap every cell baseline from current view?\nUse only when the whole curb is empty.")) return;
-  try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"recalibrate"})}); toast("Recalibrated — baselines re-seeding");}catch(e){toast("Recalibrate failed",true);} };
+  try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"recalibrate",slot:-1})}); toast("Recalibrated — baselines re-seeding");}catch(e){toast("Recalibrate failed",true);} };
 $("#saveAdmin").onclick=()=>save(["adminUser","adminPass"]);
 $("#saveWifi").onclick=()=>save(["staSsid","staPass","hostname","apSsid","apPass"]);
 $("#saveWatchdog").onclick=()=>save(["offlineRebootMin","apRetryMin"]);
@@ -1063,8 +1055,12 @@ async function poll(){
 }
 
 // ---- boot ----
-(async()=>{ await poll(); await loadCfg();
-  refreshSnap(); pollLog(); startPolling(); })();
+(async()=>{
+  // Restore persisted UI preferences
+  const _clEl=$("#cellLenM"); if(_clEl) _clEl.value=cellLenM;
+  await poll(); await loadCfg();
+  refreshSnap(); pollLog(); startPolling();
+})();
 </script>
 </body>
 </html>
