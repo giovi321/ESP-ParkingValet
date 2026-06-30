@@ -105,10 +105,73 @@ size_t overlayRenderJpeg(const Config& cfg, const CurbResult& cv, uint8_t** out)
   esp_camera_fb_return(fb);
   if (!ok) { heap_caps_free(rgb); log_w("overlay: decode failed"); return 0; }
 
-  // TODO(T6-T10): full curb cell/strip draw loop implemented in Task C3.2.
-  // For now: render a clean frame with only the timestamp overlay.
-  // (cv parameter is kept for the signature; will be used in C3.2.)
-  (void)cv;
+  // ---- Curb cell overlay (Task T6 / C3.2) ----------------------------------
+  {
+    int nDraw = cv.nCells;
+    if (nDraw > cfg.cellCount) nDraw = cfg.cellCount;
+    if (nDraw > MAX_CELLS)     nDraw = MAX_CELLS;
+
+    for (int i = 0; i < nDraw; i++) {
+      // Pixel-space quad vertices (normalised -> image coords)
+      float vx[4], vy[4];
+      for (int j = 0; j < 4; j++) {
+        vx[j] = cfg.cells[i].px[j] * w;
+        vy[j] = cfg.cells[i].py[j] * h;
+      }
+
+      // Colour: disabled=grey, occupied=red, free=green
+      uint16_t col;
+      if (!cfg.cells[i].enabled)    col = COL_DIS;
+      else if (cv.cells[i].occupied) col = COL_OCC;
+      else                           col = COL_FREE;
+
+      // Translucent fill — scan bounding box, paint pixels inside the quad
+      float minX = vx[0], maxX = vx[0], minY = vy[0], maxY = vy[0];
+      for (int j = 1; j < 4; j++) {
+        if (vx[j] < minX) minX = vx[j]; if (vx[j] > maxX) maxX = vx[j];
+        if (vy[j] < minY) minY = vy[j]; if (vy[j] > maxY) maxY = vy[j];
+      }
+      int bx0 = (int)minX, bx1 = (int)(maxX + 0.5f);
+      int by0 = (int)minY, by1 = (int)(maxY + 0.5f);
+      if (bx0 < 0) bx0 = 0; if (bx1 >= w) bx1 = w - 1;
+      if (by0 < 0) by0 = 0; if (by1 >= h) by1 = h - 1;
+      for (int py = by0; py <= by1; py++) {
+        for (int px = bx0; px <= bx1; px++) {
+          if (pointInPoly(vx, vy, 4, (float)px, (float)py))
+            blendPx(rgb, w, h, px, py, col, 70);
+        }
+      }
+
+      // Opaque outline (4 edges)
+      for (int j = 0; j < 4; j++) {
+        int nxt = (j + 1) % 4;
+        drawLine(rgb, w, h, (int)vx[j], (int)vy[j], (int)vx[nxt], (int)vy[nxt], col);
+      }
+    }
+  }
+
+  // ---- Headline text (top-left, scale 2) ------------------------------------
+  {
+    char line[48];
+    int  ty = 6;
+    const int ts = 2;   // glyph scale factor
+
+    snprintf(line, sizeof(line), "Free %.1fm", cv.free_curb_m);
+    drawText(rgb, w, h, 6, ty, line, COL_WHITE, ts);
+    ty += 7 * ts + 4;
+
+    snprintf(line, sizeof(line), "Room: %s", cv.can_fit ? "YES" : "no");
+    drawText(rgb, w, h, 6, ty, line, COL_WHITE, ts);
+    ty += 7 * ts + 4;
+
+    snprintf(line, sizeof(line), "~%d spaces", cv.est_free_spaces);
+    drawText(rgb, w, h, 6, ty, line, COL_WHITE, ts);
+    ty += 7 * ts + 4;
+
+    if (cv.dark) {
+      drawText(rgb, w, h, 6, ty, "(low light)", COL_WHITE, ts);
+    }
+  }
 
   // timestamp, bottom-left
   String ts = clockLocalStamp(cfg.tzOffsetMin);
