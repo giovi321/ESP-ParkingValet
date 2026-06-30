@@ -26,7 +26,7 @@ def test_emitted_weights_separate_classes(tmp_path):
     assert pe < 0.5 < po
 
 def test_load_records_y_override(tmp_path):
-    rec = {"device":"x","ts":1,"bays":[
+    rec = {"device":"x","ts":1,"cells":[
         {"i":0,"label":0,"f":[0.0]*16},
         {"i":1,"label":0,"y":1,"f":[1.0]*16}]}
     p = tmp_path / "r.jsonl"; p.write_text(json.dumps(rec) + "\n")

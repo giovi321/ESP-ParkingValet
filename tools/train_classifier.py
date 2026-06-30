@@ -25,7 +25,7 @@ def load_records(path):
             except json.JSONDecodeError as e:
                 print("warning: skipping malformed JSON line: %s" % e, file=sys.stderr)
                 continue
-            for bay in obj.get("bays", []):
+            for bay in obj.get("cells", []):
                 feat = bay.get("f")
                 if not feat or len(feat) != NFEAT:
                     continue

@@ -13,11 +13,10 @@ void captureMaybeLog(const Config& cfg, const CurbResult& r) {
   if (s_lastCapMs != 0 && (now - s_lastCapMs) < CAPTURE_MIN_INTERVAL_MS) return;
   s_lastCapMs = now;
 
-  // TODO(T6-T10): rename JSON key "bays" -> "cells" in Task C5.1
   String body; body.reserve(256 + (size_t)r.nCells * 220);
   body += "{\"device\":\""; body += cfg.hostname; body += "\",";
   body += "\"ts\":"; body += String((uint32_t)clockEpoch()); body += ",";
-  body += "\"bays\":[";
+  body += "\"cells\":[";
   bool first = true;
   for (int i = 0; i < r.nCells && i < MAX_CELLS; i++) {
     if (!cfg.cells[i].enabled) continue;   // skip disabled cells (would train as mislabeled-empty)
