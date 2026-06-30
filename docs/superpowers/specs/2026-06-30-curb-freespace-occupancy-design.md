@@ -59,6 +59,19 @@ This is a "how much curb is free / is there a spot" sensor, not a per-car ground
    must therefore determine a **usable range** per strip and report only within it — never assert
    numbers for cells it cannot actually resolve or see. This makes the system a reliable
    near-to-mid-range sensor whose effective reach is set by the geometry, not a full-block counter.
+8. **Fisheye lens + short reliable range** (from the sample frame, 2026-06-30). The camera is a
+   wide-angle/fisheye on a high oblique mount: strong **barrel distortion** (the curb and building
+   edges visibly curve) and a vignette/window-frame border. Consequences:
+   - A single straight **4-corner planar homography is NOT faithful** under this distortion. The
+     strip is defined by **tracing the curb as a short polyline** (a few points following its
+     curve) + a width band, and cells are spaced along that polyline. Equal-ground length is
+     **approximate** (lens distortion + grazing angle make exactness impossible), so the car-count
+     is softer still — lean on `free_curb_m`, `occupied_fraction`, and `can_fit`; treat
+     `est_free_spaces` as a rough guide. Runtime lens-undistortion is out of scope (too heavy).
+   - The **reliable range is short** — about the nearest ~4 car-lengths in the lower-center. Above
+     that (tree-occluded + distant + vignette corners) is excluded via the usable-range gate.
+   - Two explicit user masks for this install: **exclude the distant cars** (far end) and **exclude
+     the car in the bottom-right corner** (dead-zone cells).
 
 ## Architecture
 
@@ -95,12 +108,19 @@ PER FRAME (device):
 
 ### 1. Strip + cell model (`curb.h`)
 - `MAX_STRIPS` (e.g. 4), `MAX_CELLS` total (e.g. 64) across all strips.
-- Per strip: `realLenM`, `realWidthM`, `cellLenM` (g), `nCells`, and the generated cell polygons
+- Per strip the user supplies, in the browser: a **curb polyline** (an ordered set of image
+  points tracing the curb's curve — needed because the fisheye lens curves straight lines, so a
+  single 4-corner quad is not faithful; a low-distortion install may use just 2 endpoints) + a
+  **width** band (how far up the car sidewalls to sample) + the **real length** of the traced
+  stretch. Stored: `realLenM`, `cellLenM` (g), `nCells`, and the generated cell polygons
   (normalized `px[]/py[]`, reusing the ROI polygon representation, ≤ `MAX_POLY` vertices).
-- Per cell: `enabled` (dead-zone mask) + runtime state: `committed`, `baselineEdge` (EMA),
-  `baselineInit`, `lastRaw`, `stableCnt` — the same five fields the bay engine kept, sized to the
-  cell count.
-- Cell-quad generation is **host-side JS** at calibration; the firmware just consumes polygons.
+- Per cell: `enabled` (dead-zone mask — this is how the bottom-right car and any no-park zone are
+  excluded) + runtime state: `committed`, `baselineEdge` (EMA), `baselineInit`, `lastRaw`,
+  `stableCnt` — the same five fields the bay engine kept, sized to the cell count.
+- Cell generation is **host-side JS** at calibration: walk the traced polyline, place cell quads
+  along it (width = the band), and apply an approximate near→far ground-length correction; the
+  firmware just consumes the resulting polygons. Cells past the usable-range gate (Decision 7) are
+  dropped at generation time.
 
 ### 2. Per-cell occupied/free
 - Reuse the ray-cast loop → `featuresFinalize()` → `feat[16]` per cell.
@@ -153,10 +173,17 @@ PER FRAME (device):
   (the homography and baselines are valid only for one fixed pose).
 
 ### 6. Perspective (host-side, zero per-frame cost)
-- One-time 4-corner planar homography per strip, computed in the browser at calibration
-  (`getPerspectiveTransform`/DLT — 4 coplanar points fully determine the 8-DOF H; the curb is a
-  single ground plane, so no intrinsics/pose/lens model needed). Cells come out short-in-pixels
-  far from the camera, long near it — each equal ground length. No runtime warp.
+- Cell layout is computed **host-side at calibration** and baked into image-space polygons — no
+  runtime warp, so per-frame perspective cost is ZERO.
+  - **Low-distortion install:** a 4-corner planar homography (`getPerspectiveTransform`/DLT — 4
+    coplanar points determine the 8-DOF H; the curb is one ground plane, no intrinsics needed)
+    yields cells short-in-pixels far / long near, each equal ground length.
+  - **THIS install (fisheye, Decision 8):** straight lines curve, so use the **traced curb
+    polyline** instead; place cells by walking the polyline with an approximate monotonic near→far
+    length correction (and an optional one-car reference mark to anchor the scale). Equal-ground
+    length is **approximate**; do not claim exactness. Modelling the full lens distortion is out of
+    scope — the usable-range gate, conservative occlusion handling, and the free-length/`can_fit`
+    headline make the system robust without it.
 - Flag far cells whose mapped pixel area drops below a floor as **low-confidence /
   resolution-starved** (optionally merge). Rely on per-cell relative/normalized features, not
   raw cross-cell absolute edge.
