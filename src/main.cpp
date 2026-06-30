@@ -222,7 +222,7 @@ static void buildStatsJson(String& out) {
   d["heap_free"]    = (uint32_t)ESP.getFreeHeap();
   d["psram_free"]   = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   d["reset_reason"] = (int)esp_reset_reason();
-  // TODO(T6-T10): rename/repoint stats keys in Task C3.4
+  // TODO(T6-T10): repoint curb metric value in Task C3.4 (key rename done)
   d["cell_count"]   = cfg.cellCount;   // was roi_count
   d["count"]        = lastResult.valid ? lastResult.est_free_spaces : -1;
   if (lastResult.valid) {
@@ -351,7 +351,7 @@ void loop() {
     lastCaptureMs = now;
     camera_fb_t* fb = esp_camera_fb_get();
     if (fb) {
-      CurbResult r;
+      static CurbResult r;
       if (cvEngine.analyze(fb->buf, fb->len, fb->width, fb->height, r)) {
         lastResult = r;
         captureMaybeLog(cfg, r);

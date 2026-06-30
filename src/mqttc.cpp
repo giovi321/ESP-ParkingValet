@@ -269,8 +269,8 @@ static void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
     for (size_t k = 0; k < idx.length(); k++) if (!isDigit(idx[k])) return;
     int i = idx.toInt();
     if (i < 0 || i >= MAX_STRIPS) return;
-    if (!strcmp(body, "free"))          cvRecalibrate(i);
-    else if (!strcmp(body, "occupied")) cvMarkOccupied(i);
+    if (!strcmp(body, "free"))          cvRecalibrate(i);  // TODO(T6-T10): strip-index used as cell-index stub
+    else if (!strcmp(body, "occupied")) cvMarkOccupied(i);  // TODO(T6-T10): strip-index used as cell-index stub
     else return;   // ignore the "-" idle echo
     s_mqtt.publish((base + "/bay/" + i + "/setstate").c_str(), SETSTATE_IDLE, true);  // reset so the same pick re-fires
   }
