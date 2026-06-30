@@ -221,6 +221,23 @@
       <div class="hint"><b>Car pitch</b> is used with <b>reliable_range_m</b> to estimate how many cars can fit. <b>Interior / End clearance</b> accounts for driveways or no-stop zones. Pitch auto-learning adjusts the pitch estimate as the system observes real parked cars.</div>
     </div>
     <div class="card">
+      <h2>Calibration helpers</h2>
+      <div class="row" style="align-items:flex-end">
+        <div style="flex:0 0 110px"><label>Cars when full (N)</label>
+          <input type="number" id="calibN" min="1" step="1" placeholder="N" style="width:100%"></div>
+        <div style="align-self:flex-end">
+          <div class="btns" style="margin-top:0">
+            <button class="btn" id="calibFullStreet">Calibrate from full street</button>
+          </div>
+        </div>
+      </div>
+      <div class="hint">Park the curb bumper-to-bumper, enter the car count N, click Calibrate — sets <b>Car pitch</b> = total strip length ÷ N and saves. This is the most accurate way to calibrate the pitch estimate.</div>
+      <div class="btns" style="margin-top:14px">
+        <button class="ghost" id="cameraMoved">Camera moved / recalibrate</button>
+      </div>
+      <div class="hint">Re-seeds all cell baselines from the current empty view. If the camera angle changed, also re-trace your strip(s) on the Live tab — cell quads are pose-specific and must be redrawn after repositioning the camera.</div>
+    </div>
+    <div class="card">
       <h2>Send trigger</h2>
       <label>Trigger mode</label>
       <select id="c_triggerMode"><option value="0">On any count change</option><option value="1">When count crosses threshold</option></select>
@@ -941,6 +958,22 @@ $("#saveDetect").onclick=()=>save([
   "occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma","stableFrames","captureIntervalMs",
   "triggerMode","triggerThreshold","minSendIntervalMs","heartbeatIntervalS"]);
 $("#saveCurbGeom").onclick=()=>save(["carPitchM","clearInteriorM","clearEndM","smoothMode","darkLumaThresh","pitchLearn"]);
+$("#calibFullStreet").onclick=async()=>{
+  const N=parseInt($("#calibN").value,10);
+  if(!N||N<1){ toast("Enter N ≥ 1",true); return; }
+  const totalLenM=strips.reduce((s,str)=>s+(str.realLenM||0),0);
+  if(totalLenM<=0){ toast("No strips defined yet",true); return; }
+  const pitch=+(totalLenM/N).toFixed(3);
+  try{ await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({carPitchM:pitch})});
+    await loadCfg(); toast("Car pitch → "+pitch.toFixed(2)+" m  (saved)");
+  }catch(e){ toast("Save failed",true); }
+};
+$("#cameraMoved").onclick=async()=>{
+  if(!confirm("Re-seed all cell baselines from the current view?\n\nIf the camera angle changed, also re-trace your strip(s) on the Live tab — cell positions are pose-specific.")) return;
+  try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"recalibrate",slot:-1})});
+    toast("Baselines re-seeded — re-trace strips on Live tab if camera angle changed");
+  }catch(e){ toast("Recalibrate failed",true); }
+};
 $("#saveWebhook").onclick=()=>save(["whEnabled","whUrl","whAuthHeaderName","whAuthHeaderValue","whTlsInsecure"]);
 $("#saveSpool").onclick=()=>save(["spoolMode","spoolMaxEntries","spoolMaxKB","spoolBackend"]);
 $("#clearSpool").onclick=async()=>{ if(!confirm("Clear all queued events?")) return; try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"clear_spool"})}); toast("Queue cleared");}catch(e){toast("Clear failed",true);} };
