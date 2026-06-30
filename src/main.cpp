@@ -142,8 +142,6 @@ static void ledUpdate() {
 }
 
 // Decide whether this committed metric warrants a webhook, per the trigger rule.
-// TODO(T6-T10): triggerThreshold units redefined in Task C3.4; currently compared
-// against est_free_spaces as a best-effort placeholder.
 static bool shouldSend(int prev, int count) {
   if (cfg.triggerMode == TRIG_THRESHOLD) {
     int N = cfg.triggerThreshold;
@@ -152,7 +150,7 @@ static bool shouldSend(int prev, int count) {
   return count != prev;                  // TRIG_ANY_CHANGE
 }
 
-static int postEvent(const char* event, camera_fb_t* fb, const CurbResult& r, int count, int prev) {
+static int postEvent(const char* event, camera_fb_t* fb, const CurbResult& r, int prev) {
   CurbEvent ev = {r.free_curb_m, r.est_free_spaces, prev, r.can_fit, r.reliable_range_m, r.occupied_fraction};
   int code = netSendEvent(cfg, event, fb->buf, fb->len, ev);  // live -> queued=false
   webNoteSend(event, ev.estSpaces, code);
@@ -168,7 +166,7 @@ static void maybeSend(camera_fb_t* fb, const CurbResult& r) {
   if (cfg.whEnabled && cfg.heartbeatIntervalS > 0 &&
       now - lastHeartbeatMs >= cfg.heartbeatIntervalS * 1000UL) {
     lastHeartbeatMs = now;
-    postEvent("heartbeat", fb, r, r.est_free_spaces,
+    postEvent("heartbeat", fb, r,
               lastSentCount < 0 ? r.est_free_spaces : lastSentCount);
   }
 
@@ -188,14 +186,14 @@ static void maybeSend(camera_fb_t* fb, const CurbResult& r) {
     uint32_t qCount, qBytes; spoolStats(qCount, qBytes);
     bool sentLive = false;
     if (WiFi.status() == WL_CONNECTED && qCount == 0) {
-      int code = postEvent("count_changed", fb, r, r.est_free_spaces, lastSentCount);  // live, with photo
+      int code = postEvent("count_changed", fb, r, lastSentCount);  // live, with photo
       sentLive = (code >= 200 && code < 400);
     }
     if (!sentLive)
       spoolEnqueue("count_changed", fb->buf, fb->len, ev);
     lastSendMs = now;
   } else {
-    postEvent("count_changed", fb, r, r.est_free_spaces, lastSentCount);
+    postEvent("count_changed", fb, r, lastSentCount);
   }
   lastSentCount = r.est_free_spaces;
 }
@@ -356,7 +354,6 @@ void loop() {
         lastResult = r;
         captureMaybeLog(cfg, r);
         if (!netIsAP()) maybeSend(fb, r);   // only act on triggers when on the real network
-        // TODO(T6-T10): MQTT trigger on curb headline change in Task C3.4
         if (r.valid && r.est_free_spaces != lastMqttCount) {
           lastMqttCount = r.est_free_spaces;
           mqttPublishNow();

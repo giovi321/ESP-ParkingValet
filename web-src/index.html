@@ -231,7 +231,7 @@
           </div>
         </div>
       </div>
-      <div class="hint">Park the curb bumper-to-bumper, enter the car count N, click Calibrate — sets <b>Car pitch</b> = total strip length ÷ N and saves. This is the most accurate way to calibrate the pitch estimate.</div>
+      <div class="hint">Park the curb bumper-to-bumper, enter the car count N, click Calibrate — sets <b>Car pitch</b> = total strip length ÷ N and saves. This is the most accurate way to calibrate the pitch estimate. Calibrating from a full street also turns off pitch auto-learning so it cannot override your explicit value.</div>
       <div class="btns" style="margin-top:14px">
         <button class="ghost" id="cameraMoved">Camera moved / recalibrate</button>
       </div>
@@ -874,8 +874,9 @@ $("#saveStrips").onclick=async()=>{
     name:str.name, realLenM:str.realLenM, realWidthM:str.realWidthM,
     nCells:cells.filter(c=>c.strip===i).length
   }));
+  const r4=v=>Math.round(v*1e4)/1e4;
   const cellsPayload=cells.map(c=>({
-    px:c.px, py:c.py, lenM:c.lenM, strip:c.strip, enabled:c.enabled
+    px:c.px.map(r4), py:c.py.map(r4), lenM:c.lenM, strip:c.strip, enabled:c.enabled
   }));
   const body=JSON.stringify({strips:stripsPayload, cells:cellsPayload});
   for(let attempt=1;attempt<=3;attempt++){
@@ -964,8 +965,8 @@ $("#calibFullStreet").onclick=async()=>{
   const totalLenM=strips.reduce((s,str)=>s+(str.realLenM||0),0);
   if(totalLenM<=0){ toast("No strips defined yet",true); return; }
   const pitch=+(totalLenM/N).toFixed(3);
-  try{ await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({carPitchM:pitch})});
-    await loadCfg(); toast("Car pitch → "+pitch.toFixed(2)+" m  (saved)");
+  try{ await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({carPitchM:pitch,pitchLearn:0})});
+    await loadCfg(); toast("Car pitch → "+pitch.toFixed(2)+" m  (auto-learn off)");
   }catch(e){ toast("Save failed",true); }
 };
 $("#cameraMoved").onclick=async()=>{

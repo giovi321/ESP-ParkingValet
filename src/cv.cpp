@@ -143,7 +143,7 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   uint32_t t0 = millis();
   out.valid = false;
   out.nCells = 0;
-  out.est_free_spaces    = 0;     // TODO(T6-T10): full headline computation in Task C3.1
+  out.est_free_spaces    = 0;
   out.free_curb_m        = 0.0f;
   out.longest_free_run_m = 0.0f;
   out.can_fit            = false;
@@ -362,8 +362,8 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   int   raw_spaces         = 0;
   // Single pass over all cells: reliable_range_m, fraction accumulators, luma sum.
   for (int i = 0; i < nCells; i++) {
-    reliable_range_m += _cfg->cells[i].lenM;
     if (_cfg->cells[i].enabled) {
+      reliable_range_m += _cfg->cells[i].lenM;
       enabled_len += _cfg->cells[i].lenM;
       if (out.cells[i].occupied) occupied_len += _cfg->cells[i].lenM;
       luma_sum += out.cells[i].meanI;
@@ -372,11 +372,6 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   }
 
   // ── Auto-learn car-pitch refiner (Task C4.1) ──
-  // Reset episode flag for every cell that is no longer occupied (car has left).
-  // This re-arms the slot so a newly-arriving car generates a fresh observation.
-  for (int i = 0; i < nCells; i++) {
-    if (!out.cells[i].occupied) _learnEpisodeActive[i] = false;
-  }
   // Scan each strip for isolated occupied runs and fold one slow-EMA observation
   // per new parking episode.
   //   Anti-double-count proxy: _learnEpisodeActive[cell] is set true when a run is
@@ -386,6 +381,11 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   //   (A median/lowest-dense-cluster would be more robust than EMA; the [3.0, 6.5] m
   //    band filter is the primary outlier guard for this revision.)
   if (_cfg->pitchLearn) {
+    // Reset episode flag for every cell that is no longer occupied (car has left).
+    // This re-arms the slot so a newly-arriving car generates a fresh observation.
+    for (int i = 0; i < nCells; i++) {
+      if (!out.cells[i].occupied) _learnEpisodeActive[i] = false;
+    }
     for (int si = 0; si < _cfg->stripCount && si < MAX_STRIPS; si++) {
       int idx[MAX_CELLS]; int ni = 0;
       for (int i = 0; i < nCells; i++) {
@@ -481,12 +481,13 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
 
   // 4. Light gate: trip dark flag when mean enabled-cell luma is low.
   float meanLuma = luma_cnt ? (luma_sum / (float)luma_cnt) : 0.0f;
-  out.dark = (meanLuma < _cfg->darkLumaThresh);
+  out.dark = (luma_cnt > 0 && meanLuma < _cfg->darkLumaThresh);
 
   // 5. Reported-integer stability hold (reuses stableNeed from the per-cell loop).
   //    Keeps est_free_spaces from flapping ±1; biases to UNDER-count (safe side).
   if (raw_spaces == _reportedSpaces) {
-    _pendingCnt = 0;
+    _pendingSpaces = -1;
+    _pendingCnt    = 0;
   } else if (raw_spaces == _pendingSpaces) {
     if (_pendingCnt < 0xFF) _pendingCnt++;
     if (_pendingCnt >= stableNeed) {

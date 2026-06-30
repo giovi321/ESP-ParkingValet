@@ -13,7 +13,6 @@
 //              adaptive empty baseline (lighting-robust)
 //   debounce: a cell's raw state must hold stableFrames cycles before commit
 //   headline: free-gap run-length -> free_curb_m / est_free_spaces / can_fit
-//             (full computation in Task C3.1; T1 initializes to zero)
 // ---------------------------------------------------------------------------
 
 struct CellResult {
@@ -105,8 +104,8 @@ class CvEngine {
   uint32_t _roiSig = 0;   // signature of current cell geometry, to detect changes
 
   // Auto-learn car-pitch refiner (Task C4.1):
-  float    _carPitchLearned;               // learned pitch (m); 0 = not yet learned
-  uint16_t _learnSamples;                  // accepted isolated-car observations (gate >= 30)
+  float    _carPitchLearned = 0.0f;        // learned pitch (m); 0 = not yet learned
+  uint16_t _learnSamples    = 0;           // accepted isolated-car observations (gate >= 30)
   bool     _learnEpisodeActive[MAX_CELLS]; // anti-double-count: episode active per cell
 
   // Stability hold for est_free_spaces (T5): keeps the published integer from

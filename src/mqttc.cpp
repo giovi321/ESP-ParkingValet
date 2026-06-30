@@ -211,7 +211,6 @@ static void publishDiscovery() {
     d["uniq_id"] = String(NODE) + "_can_fit";
     d["stat_t"]  = base + "/can_fit";
     d["avty_t"]  = avty;
-    d["dev_cla"] = "occupancy";
     d["pl_on"]   = "ON";
     d["pl_off"]  = "OFF";
     addDevice(d.as<JsonObject>());
@@ -223,7 +222,6 @@ static void publishDiscovery() {
     d["uniq_id"] = String(NODE) + "_dark";
     d["stat_t"]  = base + "/dark";
     d["avty_t"]  = avty;
-    d["dev_cla"] = "light";
     d["ent_cat"] = "diagnostic";
     d["pl_on"]   = "ON";
     d["pl_off"]  = "OFF";

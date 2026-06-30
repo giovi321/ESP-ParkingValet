@@ -81,7 +81,7 @@ void configLoadDefaults(Config& c) {
 
   c.captureIntervalMs = 1500;
   c.stableFrames      = 4;
-  c.occupancyMode     = OCCUPANCY_ABSOLUTE;   // legacy default; relative mode is opt-in
+  c.occupancyMode     = OCCUPANCY_RELATIVE;
   c.edgeThreshold     = 12.0f;
   c.relDelta          = 6.0f;
   c.hysteresis        = 0.25f;
