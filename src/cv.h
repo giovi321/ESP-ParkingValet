@@ -100,6 +100,13 @@ class CvEngine {
 
   uint32_t _roiSig = 0;   // signature of current cell geometry, to detect changes
 
+  // Stability hold for est_free_spaces (T5): keeps the published integer from
+  // flapping ±1 as a vehicle passes or light shifts.  Biases to UNDER-count
+  // (safe direction) because a parked occluder persists in the committed state.
+  int     _reportedSpaces = -1;  // last promoted value (-1 = not yet set)
+  int     _pendingSpaces  = -1;  // candidate waiting for stableFrames
+  uint8_t _pendingCnt     = 0;   // frames the candidate has held
+
   bool ensureBuffers(int w, int h);
   uint32_t roiSignature() const;
 };

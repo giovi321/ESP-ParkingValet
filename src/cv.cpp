@@ -19,6 +19,9 @@ void CvEngine::reset() {
     _baselineInit[i] = false;
     _lastEdge[i]     = 0.0f;
   }
+  _reportedSpaces = -1;
+  _pendingSpaces  = -1;
+  _pendingCnt     = 0;
 }
 
 void CvEngine::recalibrate(int index) {
@@ -314,8 +317,122 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
     cellRes.occupied     = _committed[i];
   }
 
-  // TODO(T6-T10): full curb free-gap reducer (free_curb_m / est_free_spaces /
-  // can_fit / etc.) is implemented in Task C3.1. For now headline fields remain 0.
+  // ── T5: spatial-median + free-gap reducer + headline + light gate + stability ──
+
+  // 1. Width-3 spatial median per strip (enabled cells only), when smoothMode == 1.
+  //    Reads pre-smooth labels from a stack snapshot so neighbours are unaffected
+  //    by earlier writes in the same pass.  Does NOT touch _committed[] — temporal
+  //    debounce state stays the pre-smooth per-cell value for next-frame continuity.
+  if (_cfg->smoothMode == 1) {
+    for (int si = 0; si < _cfg->stripCount && si < MAX_STRIPS; si++) {
+      int  idx[MAX_CELLS]; int ni = 0;
+      for (int i = 0; i < nCells; i++) {
+        if (_cfg->cells[i].strip == (uint8_t)si && _cfg->cells[i].enabled)
+          idx[ni++] = i;
+      }
+      if (ni < 2) continue;
+      bool snap[MAX_CELLS];
+      for (int k = 0; k < ni; k++) snap[k] = out.cells[idx[k]].occupied;
+      for (int k = 0; k < ni; k++) {
+        bool lo = snap[(k > 0)    ? k - 1 : 0];
+        bool me = snap[k];
+        bool hi = snap[(k < ni-1) ? k + 1 : ni - 1];
+        out.cells[idx[k]].occupied = ((lo ? 1 : 0) + (me ? 1 : 0) + (hi ? 1 : 0)) >= 2;
+      }
+    }
+  }
+
+  // 2 + 3. Free-gap run-length + aggregated headline scalars.
+  float free_curb_m        = 0.0f;
+  float longest_free_run_m = 0.0f;
+  float reliable_range_m   = 0.0f;
+  float enabled_len        = 0.0f;
+  float occupied_len       = 0.0f;
+  float luma_sum           = 0.0f;
+  int   luma_cnt           = 0;
+  int   raw_spaces         = 0;
+  const float pitch = (_cfg->carPitchM > 0.0f) ? _cfg->carPitchM : 6.0f;
+
+  // Single pass over all cells: reliable_range_m, fraction accumulators, luma sum.
+  for (int i = 0; i < nCells; i++) {
+    reliable_range_m += _cfg->cells[i].lenM;
+    if (_cfg->cells[i].enabled) {
+      enabled_len += _cfg->cells[i].lenM;
+      if (out.cells[i].occupied) occupied_len += _cfg->cells[i].lenM;
+      luma_sum += out.cells[i].meanI;
+      luma_cnt++;
+    }
+  }
+
+  // Per-strip free-gap run scan.
+  for (int si = 0; si < _cfg->stripCount && si < MAX_STRIPS; si++) {
+    int idx[MAX_CELLS]; int ni = 0;
+    for (int i = 0; i < nCells; i++) {
+      if (_cfg->cells[i].strip == (uint8_t)si)
+        idx[ni++] = i;
+    }
+    bool  in_run    = false;
+    float run_m     = 0.0f;
+    bool  run_front = false;   // run started at k==0 (flush against strip's front boundary)
+    for (int k = 0; k < ni; k++) {
+      int ci = idx[k];
+      bool free_cell = _cfg->cells[ci].enabled && !out.cells[ci].occupied;
+      if (free_cell) {
+        if (!in_run) { in_run = true; run_m = 0.0f; run_front = (k == 0); }
+        run_m += _cfg->cells[ci].lenM;
+      } else {
+        if (in_run) {
+          // Closed by occupied/disabled cell: run does NOT touch strip's last cell.
+          // Terminal only if it started at k==0 (flush against front boundary).
+          float clr = run_front ? _cfg->clearEndM : _cfg->clearInteriorM;
+          free_curb_m += run_m;
+          if (run_m > longest_free_run_m) longest_free_run_m = run_m;
+          if (run_m >= pitch) {
+            int n = (int)floorf((run_m - clr) / pitch);
+            raw_spaces += (n > 0 ? n : 0);
+          }
+          in_run = false; run_m = 0.0f;
+        }
+      }
+    }
+    if (in_run) {
+      // Run exhausted all strip cells → terminal at the back boundary (clearEndM).
+      free_curb_m += run_m;
+      if (run_m > longest_free_run_m) longest_free_run_m = run_m;
+      if (run_m >= pitch) {
+        int n = (int)floorf((run_m - _cfg->clearEndM) / pitch);
+        raw_spaces += (n > 0 ? n : 0);
+      }
+    }
+  }
+
+  // 4. Light gate: trip dark flag when mean enabled-cell luma is low.
+  float meanLuma = luma_cnt ? (luma_sum / (float)luma_cnt) : 0.0f;
+  out.dark = (meanLuma < _cfg->darkLumaThresh);
+
+  // 5. Reported-integer stability hold (reuses stableNeed from the per-cell loop).
+  //    Keeps est_free_spaces from flapping ±1; biases to UNDER-count (safe side).
+  if (raw_spaces == _reportedSpaces) {
+    _pendingCnt = 0;
+  } else if (raw_spaces == _pendingSpaces) {
+    if (_pendingCnt < 0xFF) _pendingCnt++;
+    if (_pendingCnt >= stableNeed) {
+      _reportedSpaces = raw_spaces;
+      _pendingCnt     = 0;
+    }
+  } else {
+    _pendingSpaces = raw_spaces;
+    _pendingCnt    = 1;
+  }
+
+  // Headline aggregation.
+  out.free_curb_m        = free_curb_m;
+  out.longest_free_run_m = longest_free_run_m;
+  out.reliable_range_m   = reliable_range_m;
+  out.can_fit            = (longest_free_run_m >= (pitch - _cfg->clearInteriorM));
+  out.occupied_fraction  = (enabled_len > 0.0f) ? (occupied_len / enabled_len) : 0.0f;
+  out.est_free_spaces    = (_reportedSpaces >= 0) ? _reportedSpaces : raw_spaces;
+
   out.tookMs = millis() - t0;
   out.valid  = true;
   return true;
