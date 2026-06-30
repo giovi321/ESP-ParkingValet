@@ -61,26 +61,37 @@
     box-shadow:0 8px 30px rgba(0,0,0,.4);opacity:0;transition:opacity .25s;pointer-events:none;z-index:20}
   .toast.show{opacity:1}
   .toast.err{border-color:#6b2b2b;color:#ff9a9a}
-  /* live / ROI editor */
+  /* live / strip tracer overlay */
   .stage{position:relative;width:100%;background:#000;border-radius:var(--r);overflow:hidden;
     border:1px solid var(--line);touch-action:none;user-select:none}
   .stage img{display:block;width:100%;height:auto}
   #ovl{position:absolute;top:0;left:0;width:100%;height:100%;touch-action:none}
-  #ovl polygon{fill:rgba(91,107,122,.18);stroke:#5b6b7a;stroke-width:2;vector-effect:non-scaling-stroke;cursor:move}
-  #ovl polygon.occ{fill:rgba(255,91,91,.20);stroke:var(--busy)}
-  #ovl polygon.free{fill:rgba(46,204,113,.16);stroke:var(--ok)}
-  #ovl polygon.sel{stroke-width:3}
-  #ovl circle.vh{fill:var(--accent);stroke:#fff;stroke-width:1.5;vector-effect:non-scaling-stroke;cursor:grab}
+  /* generated cell quads */
+  #ovl polygon.cell{fill:rgba(46,204,113,.15);stroke:var(--ok);stroke-width:1.5;vector-effect:non-scaling-stroke;cursor:pointer}
+  #ovl polygon.dead-zone{fill:rgba(91,107,122,.12);stroke:var(--off);stroke-width:1.5;stroke-dasharray:4 3;vector-effect:non-scaling-stroke;cursor:pointer}
+  #ovl polygon.out-of-range{fill:rgba(255,176,46,.08);stroke:var(--warn);stroke-width:1;stroke-dasharray:2 4;vector-effect:non-scaling-stroke;pointer-events:none}
+  #ovl polygon.free-run{fill:rgba(46,204,113,.28);stroke:var(--ok);stroke-width:2;vector-effect:non-scaling-stroke}
+  #ovl polygon.occ-run{fill:rgba(255,91,91,.22);stroke:var(--busy);stroke-width:2;vector-effect:non-scaling-stroke}
+  /* strip polylines + vertex handles */
+  #ovl polyline.strip-trace{fill:none;stroke:var(--accent);stroke-width:2;stroke-dasharray:6 3;vector-effect:non-scaling-stroke;pointer-events:none}
+  #ovl circle.sp{fill:var(--accent);stroke:#fff;stroke-width:1.5;vector-effect:non-scaling-stroke;cursor:grab}
   #ovl text.lbl{fill:#fff;font-weight:600;paint-order:stroke;stroke:rgba(0,0,0,.65);stroke-width:3px;
     font-family:'Geist',sans-serif;pointer-events:none}
-  .bigcount{text-align:center;padding:6px 0}
+  /* curb summary counters */
+  .curbrow{display:flex;gap:12px;flex-wrap:wrap;padding:4px 0}
+  .bigcount{text-align:center;flex:1;padding:6px 0;min-width:80px}
   .bigcount .n{font-size:46px;font-weight:700;line-height:1}
-  .bigcount .l{color:var(--muted);font-size:13px}
-  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
-  th,td{text-align:left;padding:6px 6px;border-bottom:1px solid var(--line)}
-  th{color:var(--muted);font-weight:500}
-  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
-  .dot.occ{background:var(--busy)} .dot.free{background:var(--ok)} .dot.dis{background:var(--off)}
+  .bigcount .l{color:var(--muted);font-size:12px}
+  /* strip editor rows */
+  .strip-row{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px}
+  /* per-cell chips */
+  .cell-list{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+  .cell-chip{display:inline-flex;align-items:center;gap:3px;font-size:11px;padding:3px 7px;border-radius:5px;
+    background:var(--panel2);border:1px solid var(--line);cursor:pointer;color:var(--muted)}
+  .cell-chip.c-free{border-color:var(--ok);color:var(--ok)}
+  .cell-chip.c-occ{border-color:var(--busy);color:var(--busy)}
+  .cell-chip.c-dead{border-color:var(--off);color:var(--off);opacity:.7}
+  .cell-chip.c-oor{border-color:var(--warn);color:var(--warn);opacity:.6;cursor:default}
   .kv{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line);font-size:13px}
   .kv span:first-child{color:var(--muted)}
   .banner{background:#3a2e12;border:1px solid #5b4a1f;color:#ffd98a;padding:10px 12px;
@@ -97,7 +108,7 @@
   <span id="ipPill" class="pill">—</span>
   <span id="rssiPill" class="pill">—</span>
   <div class="spacer"></div>
-  <div class="count">cars <b id="hCount">–</b></div>
+  <div class="count">free <b id="hCurbFree">–</b> m</div>
 </header>
 
 <nav id="tabs">
@@ -115,37 +126,57 @@
 
   <!-- LIVE -->
   <section id="live" class="active">
+    <!-- Curb summary counters (live after T8; bindings are wired now) -->
     <div class="card">
-      <div class="bigcount"><div class="n" id="bigCount">–</div><div class="l">cars detected</div></div>
+      <div class="curbrow">
+        <div class="bigcount"><div class="n" id="curbFreeM">–</div><div class="l">m free curb</div></div>
+        <div class="bigcount"><div class="n" id="curbFit">–</div><div class="l">can fit</div></div>
+        <div class="bigcount"><div class="n" id="curbEst">–</div><div class="l">est. spaces</div></div>
+        <div class="bigcount"><div class="n" id="curbRange">–</div><div class="l">m range</div></div>
+      </div>
     </div>
+
+    <!-- Strip tracer card -->
     <div class="card">
-      <h2>Live view <small>tap a slot · drag body to move · drag dots to reshape</small></h2>
+      <h2>Curb strips <small id="traceHint">click Trace then tap curb points on the image</small></h2>
       <div class="stage" id="stage">
         <img id="snap" alt="snapshot">
         <svg id="ovl" preserveAspectRatio="none"></svg>
       </div>
-      <div class="btns">
-        <button class="btn" id="addRoi">+ Add slot</button>
-        <button class="ghost" id="saveRoi">Save slots</button>
+
+      <!-- Target cell pitch (UI-only — used by Generate cells; not posted to /api/config) -->
+      <div class="row" style="margin-top:10px">
+        <div><label>Target cell length (m)</label>
+          <input type="number" id="cellLenM" value="2.0" step="0.5" min="0.5" style="width:100%"></div>
+        <div style="align-self:flex-end">
+          <div class="btns" style="margin-top:0">
+            <button class="btn" id="genCells">Generate cells</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Per-strip editor rows (rendered dynamically by renderStripList) -->
+      <div id="stripList" style="margin-top:10px"></div>
+
+      <!-- Tracing controls (shown only while a strip is being traced) -->
+      <div id="traceControls" style="display:none;margin-top:8px">
+        <div class="hint">Tracing <b id="traceStripName">—</b> — tap image to place curb points
+          &nbsp;<button class="ghost sm" id="undoPt">Undo</button>
+          &nbsp;<button class="ghost sm" id="doneTrace">Done</button></div>
+      </div>
+
+      <div class="btns" style="margin-top:10px">
+        <button class="btn" id="addStrip">+ Strip</button>
+        <button class="ghost" id="saveStrips">Save strips &amp; cells</button>
+        <button class="ghost" id="markAllEmpty">Mark all empty</button>
         <button class="ghost" id="freezeBtn">Pause refresh</button>
       </div>
-      <div id="roiEditor" style="display:none;margin-top:12px">
-        <div class="row">
-          <div><label>Name</label><input type="text" id="rName" maxlength="15"></div>
-          <div><label>Threshold (0 = use global)</label><input type="number" id="rThr" step="0.5" min="0"></div>
-        </div>
-        <div class="chk"><input type="checkbox" id="rEn"><label for="rEn" style="margin:0;color:var(--txt)">Enabled (counts toward total)</label></div>
-        <div class="btns">
-          <button class="ghost" id="addPt">+ point</button>
-          <button class="ghost" id="delPt">− point</button>
-          <button class="danger" id="delRoi">Delete slot</button>
-        </div>
-      </div>
     </div>
+
+    <!-- Per-cell readout (markup + bindings now; live occupied/free arrives after T8) -->
     <div class="card">
-      <h2>Slots</h2>
-      <table><thead><tr><th>Slot</th><th>Edge</th><th>Base</th><th>Thr</th><th>State</th><th></th></tr></thead>
-      <tbody id="slotTable"></tbody></table>
+      <h2>Cells <small>click a cell on the image or below to toggle dead zone</small></h2>
+      <div id="cellTable"></div>
     </div>
   </section>
 
@@ -167,9 +198,29 @@
         <div><label>Baseline EMA (0–0.2)</label><input type="number" id="c_baselineEma" step="0.005" min="0" max="0.2"></div>
         <div><label>Capture interval (ms)</label><input type="number" id="c_captureIntervalMs" step="100" min="200"></div>
       </div>
-      <div class="hint">Watch each bay's live <b>Edge</b> and <b>Baseline</b>. <b>Absolute:</b> set the threshold between empty-asphalt edge and parked-car edge. <b>Relative</b> (best for sun vs shade): a bay trips when its Edge rises the <i>delta</i> above its own auto-tracked empty Baseline, so changing light cancels out. Raise <b>Stable frames</b> to ride out moving shadows and passing clouds.</div>
-      <div class="btns"><button class="btn" id="recalibrate">Mark all bays empty</button></div>
-      <div class="hint">Snaps the empty Baseline to the current view. This button does <b>every</b> bay (use only when the whole lot is empty). To calibrate <b>one</b> bay while others stay occupied, use its <b>mark empty</b> button in the Slots table — handy since the lot is rarely all-empty at once.</div>
+      <div class="hint">Watch each cell's live <b>Edge</b> and <b>Baseline</b>. <b>Absolute:</b> set threshold between empty-asphalt edge and parked-car edge. <b>Relative</b> (best for sun vs shade): a cell trips when its Edge rises the <i>delta</i> above its own auto-tracked empty Baseline. Raise <b>Stable frames</b> to ride out moving shadows.</div>
+      <div class="btns"><button class="btn" id="recalibrate">Mark all cells empty</button></div>
+      <div class="hint">Snaps the empty Baseline to the current view for every cell. Use only when the whole curb is empty. To re-baseline a single cell, click its chip in the Cells card on the Live tab.</div>
+    </div>
+    <div class="card">
+      <h2>Curb geometry &amp; counting</h2>
+      <div class="row">
+        <div><label>Car pitch (m) — vehicle length + gap</label><input type="number" id="c_carPitchM" step="0.1" min="0.5"></div>
+        <div><label>Interior clearance (m)</label><input type="number" id="c_clearInteriorM" step="0.1" min="0"></div>
+      </div>
+      <div class="row">
+        <div><label>End clearance (m)</label><input type="number" id="c_clearEndM" step="0.1" min="0"></div>
+        <div><label>Dark luma threshold (0–255)</label><input type="number" id="c_darkLumaThresh" step="1" min="0" max="255"></div>
+      </div>
+      <label>Smoothing mode</label>
+      <select id="c_smoothMode">
+        <option value="0">None</option>
+        <option value="1">EMA</option>
+        <option value="2">Median window</option>
+      </select>
+      <div class="chk"><input type="checkbox" id="c_pitchLearn"><label for="c_pitchLearn" style="margin:0;color:var(--txt)">Enable pitch auto-learning from detections</label></div>
+      <div class="btns"><button class="btn" id="saveCurbGeom">Save</button></div>
+      <div class="hint"><b>Car pitch</b> is used with <b>reliable_range_m</b> to estimate how many cars can fit. <b>Interior / End clearance</b> accounts for driveways or no-stop zones. Pitch auto-learning adjusts the pitch estimate as the system observes real parked cars.</div>
     </div>
     <div class="card">
       <h2>Send trigger</h2>
@@ -189,13 +240,13 @@
         <option value="0">Edge threshold (legacy)</option>
         <option value="1">Trained classifier</option>
       </select>
-      <label>Training capture (log per-bay features to the URL below)</label>
+      <label>Training capture (log per-cell features to the URL below)</label>
       <input type="checkbox" id="c_trainCapture">
       <label>Capture URL</label><input type="text" id="c_captureUrl" placeholder="https://…/capture">
       <label>Capture auth header name</label><input type="text" id="c_captureAuthHeaderName" placeholder="e.g. X-API-Key">
       <label>Capture auth header value</label><input type="password" id="c_captureAuthHeaderValue" placeholder="unchanged">
       <div class="btns"><button class="btn" id="saveOccEngine">Save</button></div>
-      <div class="hint">"Trained classifier" uses the embedded model when present, otherwise falls back to the edge engine. Turn on Training capture to log per-bay feature vectors (throttled ~30 s) to the Capture URL for offline training.</div>
+      <div class="hint">"Trained classifier" uses the embedded model when present, otherwise falls back to the edge engine. Turn on Training capture to log per-cell feature vectors (throttled ~30 s) to the Capture URL for offline training.</div>
     </div>
   </section>
 
@@ -254,7 +305,7 @@
         <button class="btn" id="saveStats">Save</button>
         <button class="ghost" id="testStats">Send stats now</button>
       </div>
-      <div class="hint">Posts JSON: ip, rssi, ssid, mac, uptime, heap/psram, car count, version/build, reset reason, and more.</div>
+      <div class="hint">Posts JSON: ip, rssi, ssid, mac, uptime, heap/psram, free curb metres, version/build, reset reason, and more.</div>
     </div>
   </section>
 
@@ -283,7 +334,7 @@
         <button class="btn" id="saveMqtt">Save</button>
         <button class="ghost" id="testMqtt">Publish now</button>
       </div>
-      <div class="hint">Publishes each field to its own topic (e.g. <code>parking-valet/count</code>) and, with discovery on, creates one Home Assistant device — with firmware version and a GitHub link. Same info as the webhooks; the photo stays on the image webhook.</div>
+      <div class="hint">Publishes each field to its own topic (e.g. <code>parking-valet/free_curb_m</code>) and, with discovery on, creates one Home Assistant device — with firmware version and a GitHub link.</div>
     </div>
   </section>
 
@@ -399,7 +450,7 @@
       <label>Restore from file</label>
       <input type="file" id="restoreFile" accept=".json,application/json">
       <div class="btns"><button class="ghost" id="restoreBtn">Restore &amp; reboot</button></div>
-      <div class="hint">Backup is the full config (WiFi, webhooks, MQTT, ROIs, passwords) — keep it safe, it contains secrets.</div>
+      <div class="hint">Backup is the full config (WiFi, webhooks, MQTT, strips, cells, passwords) — keep it safe, it contains secrets.</div>
     </div>
     <div class="card">
       <h2>Actions</h2>
@@ -426,7 +477,21 @@ function fetchT(url,opts,ms){ const c=new AbortController(); const t=setTimeout(
 let _chain = Promise.resolve();
 function q(fn){ const run=_chain.then(fn,fn); _chain=run.then(()=>{},()=>{}); return run; }
 const api = (p,o) => q(()=> fetchT(p,o).then(r => r.ok ? r.json() : r.json().catch(()=>({})).then(j=>Promise.reject(j))));
-let cfg = {}, st = {}, sel = -1, rois = [], freeze = false, dirty = false, activeTab = "live";
+
+// ---- globals ----
+let cfg={}, st={};
+// strips: [{name,realLenM,realWidthM,pts:[{x,y}],widthPx}]  pts & widthPx are session-only (UI)
+let strips=[];
+// cells: flat across all strips: [{px:[4],py:[4],lenM,strip,enabled,_oor}]
+let cells=[];
+let cellLenM=2.0;            // target ground pitch (UI-only; drives nCells in layoutCells)
+let freeze=false, dirty=false, activeTab="live";
+let activeStripIdx=-1, tracingActive=false;
+const MAX_STRIPS=4;
+
+// DOM refs — declared early so all functions close over them
+const snap=$("#snap"), ovl=$("#ovl"), stage=$("#stage");
+let vbW=400, vbH=300;
 
 function toast(msg, err){ const t=$("#toast"); t.textContent=msg; t.className="toast show"+(err?" err":""); setTimeout(()=>t.className="toast",2200); }
 
@@ -439,7 +504,8 @@ $("#tabs").addEventListener("click", e=>{
 });
 
 // ---- form binding ----
-const F = ["occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma","stableFrames","captureIntervalMs",
+const F = [
+  "occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma","stableFrames","captureIntervalMs",
   "triggerMode","triggerThreshold","minSendIntervalMs","heartbeatIntervalS",
   "whEnabled","whUrl","whAuthHeaderName","whAuthHeaderValue","whTlsInsecure",
   "spoolMode","spoolMaxEntries","spoolMaxKB","spoolBackend",
@@ -449,7 +515,10 @@ const F = ["occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma"
   "wgEnabled","wgPrivateKey","wgAddress","wgPeerPublicKey","wgEndpointHost","wgEndpointPort","wgAllowedIps","wgPresharedKey","wgKeepalive",
   "framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode","tzOffsetMin",
   "adminUser","adminPass",
-  "occupancyEngine","trainCapture","captureUrl","captureAuthHeaderName","captureAuthHeaderValue"];
+  "occupancyEngine","trainCapture","captureUrl","captureAuthHeaderName","captureAuthHeaderValue",
+  // curb geometry keys (T1 config schema)
+  "carPitchM","clearInteriorM","clearEndM","smoothMode","darkLumaThresh","pitchLearn"
+];
 const SECRET = ["whAuthHeaderValue","statsAuthHeaderValue","mqttPass","staPass","apPass","adminPass","wgPrivateKey","wgPresharedKey","captureAuthHeaderValue"];
 
 function fill(){
@@ -458,25 +527,30 @@ function fill(){
     else if(SECRET.includes(k)) el.value="";   // never prefill secrets
     else el.value=cfg[k];
   }
-  $("#c_occupancyMode").value=String(cfg.occupancyMode);
-  $("#c_triggerMode").value=String(cfg.triggerMode);
-  $("#c_framesize").value=String(cfg.framesize);
-  $("#c_afMode").value=String(cfg.afMode);
-  $("#c_spoolMode").value=String(cfg.spoolMode);
-  $("#c_spoolBackend").value=String(cfg.spoolBackend);
-  $("#c_occupancyEngine").value=String(cfg.occupancyEngine);
+  // Explicit select syncs (parseInt may differ from fill loop for select elements)
+  const _s=(id,v)=>{ const el=$(id); if(el) el.value=String(v||0); };
+  _s("#c_occupancyMode",cfg.occupancyMode);
+  _s("#c_triggerMode",cfg.triggerMode);
+  _s("#c_framesize",cfg.framesize);
+  _s("#c_afMode",cfg.afMode);
+  _s("#c_spoolMode",cfg.spoolMode);
+  _s("#c_spoolBackend",cfg.spoolBackend);
+  _s("#c_occupancyEngine",cfg.occupancyEngine);
+  _s("#c_smoothMode",cfg.smoothMode);
 }
+
 function collect(keys){
   const o={};
   for(const k of keys){ const el=$("#c_"+k); if(!el) continue;
     if(el.type==="checkbox") o[k]=el.checked;
     else if(SECRET.includes(k)){ if(el.value!=="") o[k]=el.value; }   // omit blank secrets
-    else if(el.tagName==="SELECT") o[k]=parseInt(el.value,10);        // dropdowns are numeric (framesize, triggerMode)
-    else if(el.type==="number"){ const v=parseFloat(el.value); if(!isNaN(v)) o[k]=v; }   // omit a blank field -> keep the stored value
+    else if(el.tagName==="SELECT") o[k]=parseInt(el.value,10);
+    else if(el.type==="number"){ const v=parseFloat(el.value); if(!isNaN(v)) o[k]=v; }
     else o[k]=el.value;
   }
   return o;
 }
+
 async function save(keys, opts){
   const body=JSON.stringify(collect(keys));
   for(let attempt=1; attempt<=3; attempt++){
@@ -488,11 +562,393 @@ async function save(keys, opts){
   toast("Save failed",true);
 }
 
-async function loadCfg(){ cfg=await api("/api/config"); fill();
-  if(!dirty){ rois=(cfg.rois||[]).map(r=>({name:r.name,points:(r.points||[]).map(p=>({x:p.x,y:p.y})),threshold:r.threshold||0,enabled:r.enabled})); renderRois(); }
-  $("#pwBanner").classList.toggle("show", !!st.mustChangePass); }
+async function loadCfg(){
+  cfg = await api("/api/config");
+  fill();
+  if(!dirty){
+    // Rebuild cells from cfg (geometry is stored in cfg.cells; polyline pts are session-only)
+    cells = (cfg.cells||[]).map(c=>({
+      px: c.px||[], py: c.py||[], lenM: c.lenM||0,
+      strip: c.strip||0, enabled: c.enabled!==false,
+      _oor: false  // oor distinction is session-only; after reload all disabled = user-disabled
+    }));
+    // Rebuild strips metadata (no pts — user must re-trace to reshape a strip)
+    const cfgStrips = cfg.strips||[];
+    // Only rebuild if strips array is empty (don't wipe a fresh tracing session)
+    if(strips.length===0){
+      strips = cfgStrips.map((s,i)=>({
+        name: s.name||("S"+(i+1)),
+        realLenM: s.realLenM||10,
+        realWidthM: s.realWidthM||2.5,
+        pts: [],
+        widthPx: Math.max(10, Math.round(vbW*0.07))
+      }));
+    }
+    renderStripList();
+    renderOverlay();
+    renderCellTable();
+  }
+  $("#pwBanner").classList.toggle("show", !!st.mustChangePass);
+}
 
-$("#saveDetect").onclick=()=>save(["occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma","stableFrames","captureIntervalMs","triggerMode","triggerThreshold","minSendIntervalMs","heartbeatIntervalS"]);
+// ---- layoutCells -------------------------------------------------------
+// Generate approximately equal-ground-length cells along a curb polyline.
+//
+// polyline  [{x,y}] image-pixel coords; widthPx  cell width in image px;
+// realLenM  physical strip length (m); gTargetM  target ground pitch per cell (m);
+// stripIndex  index into strips[] (stored in each returned cell).
+//
+// Near→far correction: the camera is fisheye/oblique so near-curb cells must
+// consume MORE image arc per metre of ground than far-curb cells.  We apply a
+// simple linear ramp — the top of the ramp (1+R)×avg goes to the nearest cell
+// (largest y in the frame), the bottom (1-R)×avg to the farthest.  R=0.45 is
+// a reasonable default for a typical oblique-mounted fisheye; the user's visual
+// preview + re-trace are the calibration, not math.
+//
+// Returns [{px:[4],py:[4],lenM,strip,enabled}] normalised to [0,1].
+function layoutCells(polyline, widthPx, realLenM, gTargetM, stripIndex){
+  if(polyline.length<2) return [];
+
+  // Arc lengths of each polyline segment
+  const sArcs=[];
+  let tArc=0;
+  for(let i=1;i<polyline.length;i++){
+    const dx=polyline[i].x-polyline[i-1].x, dy=polyline[i].y-polyline[i-1].y;
+    const d=Math.sqrt(dx*dx+dy*dy);
+    sArcs.push(d); tArc+=d;
+  }
+  if(tArc<1) return [];
+
+  // Number of cells; clamp nCells to at least 1
+  const nCells=Math.max(1,Math.round(realLenM/gTargetM));
+  const lenM=realLenM/nCells;
+
+  // Walk from the NEAR end (larger y = lower in frame = closer to camera)
+  const yFirst=polyline[0].y, yLast=polyline[polyline.length-1].y;
+  const pts=yFirst>=yLast ? polyline : [...polyline].reverse();
+
+  // Recompute sArcs for the (possibly reversed) pts
+  const sa=[], sa2=[];
+  let ta=0;
+  for(let i=1;i<pts.length;i++){
+    const dx=pts[i].x-pts[i-1].x, dy=pts[i].y-pts[i-1].y;
+    const d=Math.sqrt(dx*dx+dy*dy);
+    sa.push(d); ta+=d;
+  }
+
+  // Linear ramp: near cell gets (1+R)×avg arc, far cell gets (1-R)×avg arc
+  const R=0.45;
+  const rawArcs=[];
+  for(let i=0;i<nCells;i++){
+    const t=nCells>1?i/(nCells-1):0;   // 0=near, 1=far
+    rawArcs.push((1+R)-2*R*t);          // 1.45 → 0.55
+  }
+  const rawSum=rawArcs.reduce((a,b)=>a+b,0);
+  const cellArcs=rawArcs.map(v=>v/rawSum*ta);  // normalise so they sum to total arc
+
+  // Sample a point + unit tangent at arc-distance d along pts
+  function sample(d){
+    let acc=0;
+    for(let i=0;i<sa.length;i++){
+      const next=acc+sa[i];
+      if(d<=next||i===sa.length-1){
+        const t=sa[i]>0?(d-acc)/sa[i]:0;
+        const t2=Math.max(0,Math.min(1,t));
+        const x=pts[i].x+(pts[i+1].x-pts[i].x)*t2;
+        const y=pts[i].y+(pts[i+1].y-pts[i].y)*t2;
+        const mag=sa[i]||1;
+        return {x, y, dx:(pts[i+1].x-pts[i].x)/mag, dy:(pts[i+1].y-pts[i].y)/mag};
+      }
+      acc=next;
+    }
+    // Fallback: last point with last segment direction
+    const last=pts.length-1;
+    const ddx=pts[last].x-pts[last-1].x, ddy=pts[last].y-pts[last-1].y;
+    const mag=Math.sqrt(ddx*ddx+ddy*ddy)||1;
+    return {x:pts[last].x, y:pts[last].y, dx:ddx/mag, dy:ddy/mag};
+  }
+
+  // Build cell quads
+  const result=[];
+  let arcPos=0;
+  for(let i=0;i<nCells;i++){
+    const arcStart=arcPos;
+    const arcEnd=arcPos+cellArcs[i];
+    const s0=sample(arcStart);
+    const s1=sample(arcEnd);
+    const hw=widthPx/2;
+    // Perpendicular to the tangent direction at each end
+    const p0={x:-s0.dy, y:s0.dx};
+    const p1={x:-s1.dy, y:s1.dx};
+    // Quad corners: startLeft, startRight, endRight, endLeft
+    const quad=[
+      {x:s0.x-p0.x*hw, y:s0.y-p0.y*hw},
+      {x:s0.x+p0.x*hw, y:s0.y+p0.y*hw},
+      {x:s1.x+p1.x*hw, y:s1.y+p1.y*hw},
+      {x:s1.x-p1.x*hw, y:s1.y-p1.y*hw}
+    ];
+    // Usable-range gate: cells whose arc-length on the image is < 7 px
+    // are too small to be reliable (far end of fisheye range)
+    const oor=cellArcs[i]<7;
+    result.push({
+      px: quad.map(p=>p.x/vbW),
+      py: quad.map(p=>p.y/vbH),
+      lenM, strip:stripIndex, enabled:!oor, _oor:oor
+    });
+    arcPos=arcEnd;
+  }
+  return result;
+}
+
+// ---- SVG overlay (strip traces + cell quads) ---------------------------
+function syncViewBox(){
+  vbW=snap.naturalWidth||vbW; vbH=snap.naturalHeight||vbH;
+  ovl.setAttribute("viewBox","0 0 "+vbW+" "+vbH);
+}
+snap.addEventListener("load",()=>{ syncViewBox(); renderOverlay(); });
+
+function renderOverlay(){
+  syncViewBox();
+  let s="";
+
+  // Generated cell quads
+  cells.forEach((c,i)=>{
+    // Live occupancy (wired now; live data flows after T8)
+    const lv=st.cells&&st.cells[i];
+    let cls;
+    if(c._oor)          cls="out-of-range";
+    else if(!c.enabled) cls="dead-zone";
+    else if(lv)         cls=lv.occupied?"occ-run":"free-run";
+    else                cls="cell";
+    const pts=c.px.map((x,j)=>(x*vbW).toFixed(1)+","+(c.py[j]*vbH).toFixed(1)).join(" ");
+    s+='<polygon class="'+cls+'" points="'+pts+'" data-ci="'+i+'"/>';
+    // Minimal index label
+    const cx=c.px.reduce((a,b)=>a+b,0)/4*vbW;
+    const cy=c.py.reduce((a,b)=>a+b,0)/4*vbH;
+    s+='<text class="lbl" x="'+cx.toFixed(1)+'" y="'+cy.toFixed(1)+'" font-size="'+(vbH*0.036).toFixed(1)+'" text-anchor="middle" dominant-baseline="middle">'+(i+1)+'</text>';
+  });
+
+  // Strip polylines + draggable vertex handles
+  strips.forEach((str,si)=>{
+    if(str.pts.length===0) return;
+    if(str.pts.length===1){
+      const p=str.pts[0];
+      s+='<circle class="sp" cx="'+p.x.toFixed(1)+'" cy="'+p.y.toFixed(1)+'" r="'+(vbW*0.011).toFixed(2)+'" data-si="'+si+'" data-pi="0" vector-effect="non-scaling-stroke"/>';
+      return;
+    }
+    const ptStr=str.pts.map(p=>p.x.toFixed(1)+","+p.y.toFixed(1)).join(" ");
+    s+='<polyline class="strip-trace" points="'+ptStr+'"/>';
+    str.pts.forEach((p,pi)=>{
+      s+='<circle class="sp" cx="'+p.x.toFixed(1)+'" cy="'+p.y.toFixed(1)+'" r="'+(vbW*0.011).toFixed(2)+'" data-si="'+si+'" data-pi="'+pi+'" vector-effect="non-scaling-stroke"/>';
+    });
+  });
+
+  ovl.innerHTML=s;
+}
+
+// ---- Strip list (rendered into #stripList) -----------------------------
+function renderStripList(){
+  const c=$("#stripList"); if(!c) return;
+  if(strips.length===0){
+    c.innerHTML='<p class="hint">No strips yet — click "+ Strip" to begin tracing the curb.</p>';
+    return;
+  }
+  c.innerHTML=strips.map((str,i)=>`
+    <div class="strip-row">
+      <div class="row">
+        <div style="flex:0 0 90px"><label>Name</label>
+          <input type="text" value="${esc(str.name)}" style="width:100%"
+            oninput="strips[${i}].name=this.value"></div>
+        <div><label>Length (m)</label>
+          <input type="number" value="${str.realLenM}" step="0.5" min="1"
+            onchange="strips[${i}].realLenM=parseFloat(this.value)||10"></div>
+        <div><label>Width (m)</label>
+          <input type="number" value="${str.realWidthM}" step="0.1" min="0.5"
+            onchange="strips[${i}].realWidthM=parseFloat(this.value)||2.5"></div>
+        <div><label>Width (px)</label>
+          <input type="number" value="${str.widthPx||40}" step="2" min="4"
+            onchange="strips[${i}].widthPx=parseInt(this.value)||40;dirty=true;renderOverlay()"></div>
+      </div>
+      <div class="btns" style="margin-top:6px">
+        <button class="ghost sm" onclick="startTrace(${i})">Trace</button>
+        <button class="ghost sm" onclick="clearStripPts(${i})">Clear pts</button>
+        <button class="danger sm" onclick="removeStrip(${i})">Remove</button>
+      </div>
+      <div class="hint">${str.pts.length} point${str.pts.length!==1?'s':''} traced${str.pts.length<2?' (need ≥ 2 to generate)':''}</div>
+    </div>`).join("");
+}
+
+// ---- Per-cell readout (rendered into #cellTable) ----------------------
+function renderCellTable(){
+  const c=$("#cellTable"); if(!c) return;
+  if(cells.length===0){
+    c.innerHTML='<p class="hint">No cells yet — trace strip(s) then click Generate cells.</p>';
+    return;
+  }
+  // Group by strip
+  const byStrip={};
+  cells.forEach((cell,i)=>{ const si=cell.strip||0; (byStrip[si]=byStrip[si]||[]).push({cell,i}); });
+  let html="";
+  Object.keys(byStrip).sort((a,b)=>+a-+b).forEach(si=>{
+    const sName=(strips[+si]&&strips[+si].name)||("Strip "+(+si+1));
+    html+='<div style="margin-bottom:10px"><div style="font-size:12px;color:var(--muted);margin-bottom:4px">'+esc(sName)+'</div><div class="cell-list">';
+    byStrip[si].forEach(({cell,i})=>{
+      const lv=st.cells&&st.cells[i];
+      let cls, sym;
+      if(cell._oor){  cls="c-oor"; sym="OOR"; }
+      else if(!cell.enabled){ cls="c-dead"; sym="✕"; }
+      else if(lv&&lv.occupied){ cls="c-occ"; sym="●"; }
+      else if(lv&&!lv.occupied){ cls="c-free"; sym="○"; }
+      else { cls=""; sym="—"; }
+      html+='<div class="cell-chip '+cls+'" onclick="toggleCell('+i+')" title="Cell '+(i+1)+' · '+cell.lenM.toFixed(1)+'m · strip '+si+(cell._oor?' · out of range':'')+((!cell.enabled&&!cell._oor)?' · dead zone':'')+'">'+(i+1)+' '+sym+'</div>';
+    });
+    html+='</div></div>';
+  });
+  c.innerHTML=html;
+}
+
+// ---- Tracer actions (called from inline onclick & button handlers) ----
+function startTrace(si){
+  activeStripIdx=si; tracingActive=true;
+  $("#traceControls").style.display="";
+  $("#traceStripName").textContent=strips[si].name;
+  ovl.style.cursor="crosshair";
+}
+function stopTrace(){
+  tracingActive=false; activeStripIdx=-1;
+  const tc=$("#traceControls"); if(tc) tc.style.display="none";
+  ovl.style.cursor="";
+}
+function clearStripPts(si){
+  strips[si].pts=[]; dirty=true; renderOverlay(); renderStripList();
+}
+function removeStrip(si){
+  strips.splice(si,1);
+  // Re-index cells: remove cells belonging to si, decrement strip idx for higher strips
+  cells=cells.filter(c=>c.strip!==si).map(c=>Object.assign({},c,{strip:c.strip>si?c.strip-1:c.strip}));
+  if(activeStripIdx===si) stopTrace();
+  dirty=true; renderStripList(); renderOverlay(); renderCellTable();
+}
+function toggleCell(i){
+  if(!cells[i]) return;
+  if(cells[i]._oor){ toast("Out-of-range cell — cannot enable",true); return; }
+  cells[i].enabled=!cells[i].enabled;
+  dirty=true; renderOverlay(); renderCellTable();
+}
+
+// ---- Strip/cell button handlers ----------------------------------------
+$("#addStrip").onclick=()=>{
+  if(strips.length>=MAX_STRIPS){ toast("Max "+MAX_STRIPS+" strips",true); return; }
+  strips.push({name:"S"+(strips.length+1), realLenM:20, realWidthM:2.5,
+    pts:[], widthPx:Math.max(10,Math.round(vbW*0.07))});
+  dirty=true; renderStripList();
+};
+
+$("#genCells").onclick=()=>{
+  const pitch=parseFloat($("#cellLenM").value);
+  cellLenM=isNaN(pitch)||pitch<0.1?2.0:pitch;
+  let newCells=[];
+  let ok=true;
+  strips.forEach((str,si)=>{
+    if(str.pts.length<2){ toast("Strip "+str.name+" needs ≥ 2 points",true); ok=false; return; }
+    const gen=layoutCells(str.pts, str.widthPx||40, str.realLenM, cellLenM, si);
+    newCells=newCells.concat(gen);
+  });
+  if(!ok && newCells.length===0) return;
+  cells=newCells;
+  dirty=true; renderOverlay(); renderCellTable();
+  toast("Generated "+cells.length+" cell"+(cells.length!==1?"s":""));
+};
+
+$("#saveStrips").onclick=async()=>{
+  // Build strips payload: nCells per strip comes from the flat cells array
+  const stripsPayload=strips.map((str,i)=>({
+    name:str.name, realLenM:str.realLenM, realWidthM:str.realWidthM,
+    nCells:cells.filter(c=>c.strip===i).length
+  }));
+  // Cells payload: oor cells are saved as disabled (enabled:false)
+  const cellsPayload=cells.map(c=>({
+    px:c.px, py:c.py, lenM:c.lenM, strip:c.strip,
+    enabled: c.enabled && !c._oor
+  }));
+  try{
+    await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({strips:stripsPayload, cells:cellsPayload})});
+    dirty=false; toast("Strips & cells saved"); await loadCfg();
+  }catch(e){ toast("Save failed",true); }
+};
+
+$("#markAllEmpty").onclick=async()=>{
+  if(!confirm("Seed all cell baselines from the current view?\nUse only when the entire curb is empty.")) return;
+  try{
+    await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"recalibrate",slot:-1})});
+    toast("Baselines re-seeded");
+  }catch(e){ toast("Recalibrate failed",true); }
+};
+
+$("#doneTrace").onclick=()=>{ stopTrace(); renderOverlay(); renderStripList(); };
+$("#undoPt").onclick=()=>{
+  if(activeStripIdx<0) return;
+  const p=strips[activeStripIdx].pts;
+  if(!p.length) return;
+  p.pop(); dirty=true; renderOverlay(); renderStripList();
+};
+$("#freezeBtn").onclick=()=>{ freeze=!freeze; $("#freezeBtn").textContent=freeze?"Resume refresh":"Pause refresh"; };
+
+// ---- SVG pointer events ------------------------------------------------
+let drag=null;
+ovl.addEventListener("pointerdown",e=>{
+  const t=e.target;
+
+  // --- Trace mode: tap to add a point to the active strip ---
+  if(tracingActive && activeStripIdx>=0){
+    const rect=stage.getBoundingClientRect();
+    const sx=(e.clientX-rect.left)/rect.width*vbW;
+    const sy=(e.clientY-rect.top)/rect.height*vbH;
+    strips[activeStripIdx].pts.push({x:Math.max(0,Math.min(vbW,sx)), y:Math.max(0,Math.min(vbH,sy))});
+    dirty=true; e.preventDefault();
+    renderOverlay(); renderStripList();
+    return;
+  }
+
+  // --- Cell polygon click: toggle dead zone ---
+  if(t.dataset&&t.dataset.ci!==undefined){
+    toggleCell(parseInt(t.dataset.ci,10));
+    e.preventDefault(); return;
+  }
+
+  // --- Vertex handle drag: reposition a strip point ---
+  if(t.classList&&t.classList.contains("sp")){
+    const si=+t.dataset.si, pi=+t.dataset.pi;
+    drag={si,pi,mode:"svert",
+      sx:strips[si].pts[pi].x, sy:strips[si].pts[pi].y};
+    drag.rect=stage.getBoundingClientRect();
+    drag.ox=e.clientX; drag.oy=e.clientY;
+    ovl.setPointerCapture(e.pointerId); e.preventDefault();
+  }
+});
+
+ovl.addEventListener("pointermove",e=>{
+  if(!drag) return;
+  const rect=drag.rect;
+  const dx=(e.clientX-drag.ox)/rect.width*vbW;
+  const dy=(e.clientY-drag.oy)/rect.height*vbH;
+  if(drag.mode==="svert"){
+    strips[drag.si].pts[drag.pi].x=Math.max(0,Math.min(vbW,drag.sx+dx));
+    strips[drag.si].pts[drag.pi].y=Math.max(0,Math.min(vbH,drag.sy+dy));
+    dirty=true; renderOverlay();
+  }
+});
+function endDrag(e){ if(drag){try{ovl.releasePointerCapture(e.pointerId);}catch(_){}} drag=null; }
+ovl.addEventListener("pointerup",endDrag);
+ovl.addEventListener("pointercancel",endDrag);
+
+// ---- save handlers (all platform cards unchanged) ---------------------
+$("#saveDetect").onclick=()=>save([
+  "occupancyMode","edgeThreshold","relDelta","hysteresis","baselineEma","stableFrames","captureIntervalMs",
+  "triggerMode","triggerThreshold","minSendIntervalMs","heartbeatIntervalS"]);
+$("#saveCurbGeom").onclick=()=>save(["carPitchM","clearInteriorM","clearEndM","smoothMode","darkLumaThresh","pitchLearn"]);
 $("#saveWebhook").onclick=()=>save(["whEnabled","whUrl","whAuthHeaderName","whAuthHeaderValue","whTlsInsecure"]);
 $("#saveSpool").onclick=()=>save(["spoolMode","spoolMaxEntries","spoolMaxKB","spoolBackend"]);
 $("#clearSpool").onclick=async()=>{ if(!confirm("Clear all queued events?")) return; try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"clear_spool"})}); toast("Queue cleared");}catch(e){toast("Clear failed",true);} };
@@ -502,23 +958,13 @@ $("#saveMqtt").onclick=()=>save(["mqttEnabled","mqttHost","mqttPort","mqttTls","
 $("#testMqtt").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_mqtt"})}); toast(r.ok?"Published":"MQTT not connected",!r.ok);}catch(e){toast("MQTT failed",true);} };
 $("#saveImage").onclick=()=>save(["framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode","tzOffsetMin"]);
 $("#focusNow").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"af_focus"})}); toast(r.ok?"Focusing…":"AF unavailable",!r.ok);}catch(e){toast("AF failed",true);} };
-$("#recalibrate").onclick=async()=>{ if(!confirm("Snap every bay's baseline to the current view? Press only when ALL bays are empty.")) return; try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"recalibrate"})}); toast("Recalibrated — baselines re-seeding");}catch(e){toast("Recalibrate failed",true);} };
-// Per-bay "mark empty" buttons in the Slots table (delegated; the tbody persists across re-renders).
-$("#slotTable").addEventListener("click",async(e)=>{ const b=e.target.closest("button[data-empty]"); if(!b) return;
-  const i=parseInt(b.dataset.empty,10); const row=b.closest("tr"); const name=row?row.firstElementChild.textContent:("bay "+i);
-  if(!confirm(`Mark "${name}" empty now? Do this only when that bay is actually empty.`)) return;
-  try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"recalibrate",slot:i})}); toast(`"${name}" re-baselined`);}catch(err){toast("Mark empty failed",true);} });
-// Per-bay "mark occupied" buttons (inverse of mark empty; fixes a bay that seeded its baseline while occupied).
-$("#slotTable").addEventListener("click",async(e)=>{ const b=e.target.closest("button[data-occ]"); if(!b) return;
-  const i=parseInt(b.dataset.occ,10); const row=b.closest("tr"); const name=row?row.firstElementChild.textContent:("bay "+i);
-  if(!confirm(`Mark "${name}" occupied now? Use when this bay is occupied but reads free (relative mode).`)) return;
-  try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"mark_occupied",slot:i})}); toast(`"${name}" marked occupied`);}catch(err){toast("Mark occupied failed",true);} });
+$("#recalibrate").onclick=async()=>{ if(!confirm("Snap every cell baseline from current view?\nUse only when the whole curb is empty.")) return;
+  try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"recalibrate"})}); toast("Recalibrated — baselines re-seeding");}catch(e){toast("Recalibrate failed",true);} };
 $("#saveAdmin").onclick=()=>save(["adminUser","adminPass"]);
 $("#saveWifi").onclick=()=>save(["staSsid","staPass","hostname","apSsid","apPass"]);
 $("#saveWatchdog").onclick=()=>save(["offlineRebootMin","apRetryMin"]);
 $("#saveWg").onclick=()=>save(["wgEnabled","wgPrivateKey","wgAddress","wgPeerPublicKey","wgEndpointHost","wgEndpointPort","wgAllowedIps","wgPresharedKey","wgKeepalive"]);
 $("#saveOccEngine").onclick=()=>save(["occupancyEngine","trainCapture","captureUrl","captureAuthHeaderName","captureAuthHeaderValue"]);
-
 $("#testWebhook").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_webhook"})}); toast(r.ok?("Test sent · HTTP "+r.code):("Test failed · "+r.code),!r.ok);}catch(e){toast("Test failed",true);} };
 
 function action(a,msg,confirmMsg){ return async()=>{ if(confirmMsg&&!confirm(confirmMsg)) return;
@@ -530,17 +976,17 @@ $("#backupBtn").onclick=()=>{ window.location='/api/backup'; };
 $("#restoreBtn").onclick=async()=>{ const f=$("#restoreFile").files[0]; if(!f){toast("Pick a backup .json first",true);return;}
   try{ const txt=await f.text(); const r=await api("/api/restore",{method:"POST",headers:{"Content-Type":"application/json"},body:txt}); toast(r.ok?"Restored, rebooting…":"Restore failed",!r.ok);}catch(e){toast("Restore failed",true);} };
 
-// ---- polling control (pause during OTA so the upload owns the single-connection server) ----
+// ---- polling control (pause during OTA so upload owns the single-connection server) ----
 let pollTimers=[];
 function startPolling(){ stopPolling(); pollTimers=[setInterval(poll,1000),setInterval(refreshSnap,1500),setInterval(pollLog,2500)]; }
 function stopPolling(){ pollTimers.forEach(clearInterval); pollTimers=[]; }
 
 // ---- OTA ----
 $("#otaBtn").onclick=()=>{ const f=$("#otaFile").files[0]; if(!f){toast("Pick a .bin first",true);return;}
-  const APP_SLOT=1966080;   // ota_0/ota_1 partition size (0x1E0000) — reject obviously-wrong files up front
+  const APP_SLOT=1966080;
   if(f.size>APP_SLOT){ $("#otaStatus").textContent="Too large for the app partition ("+f.size+" > "+APP_SLOT+" bytes)"; toast("Image too large",true); return; }
   if(f.size<65536||!/\.bin$/i.test(f.name)){ $("#otaStatus").textContent="That doesn't look like a firmware .bin"; toast("Pick a firmware .bin",true); return; }
-  stopPolling();   // free the single-connection server: nothing competes with the upload
+  stopPolling();
   const xhr=new XMLHttpRequest(); xhr.open("POST","/update"); xhr.timeout=180000;
   xhr.upload.onprogress=e=>{ if(e.lengthComputable) $("#otaStatus").textContent="Uploading… "+Math.round(e.loaded/e.total*100)+"%"; };
   xhr.onload=()=>{ let j={}; try{j=JSON.parse(xhr.responseText);}catch(_){}
@@ -551,110 +997,32 @@ $("#otaBtn").onclick=()=>{ const f=$("#otaFile").files[0]; if(!f){toast("Pick a 
   const fd=new FormData(); fd.append("update",f,f.name); $("#otaStatus").textContent="Uploading…"; xhr.send(fd); };
 
 // ---- live snapshot ----
-const snap=$("#snap");
 let _snapBusy=false;
 async function refreshSnap(){
-  if(freeze || activeTab!=="live" || _snapBusy) return;
+  if(freeze||activeTab!=="live"||_snapBusy) return;
   _snapBusy=true;
   try{ const u=await q(async()=>{ const r=await fetchT("/snapshot?t="+Date.now()); if(!r.ok) throw 0;
     const b=await r.blob(); return URL.createObjectURL(b); });
     snap.onload=()=>URL.revokeObjectURL(u); snap.src=u;
   }catch(e){} finally{ _snapBusy=false; }
 }
-$("#freezeBtn").onclick=()=>{ freeze=!freeze; $("#freezeBtn").textContent=freeze?"Resume refresh":"Pause refresh"; };
 
 // ---- serial console ----
 let logPaused=false, _logBusy=false;
-async function pollLog(){ if(logPaused || activeTab!=="system" || _logBusy) return; _logBusy=true;
-  try{ const t=await q(async()=>{ const r=await fetchT("/api/log"); return r.ok? r.text():""; });
+async function pollLog(){ if(logPaused||activeTab!=="system"||_logBusy) return; _logBusy=true;
+  try{ const t=await q(async()=>{ const r=await fetchT("/api/log"); return r.ok?r.text():""; });
     const v=$("#logView"); const atBottom=v.scrollTop+v.clientHeight>=v.scrollHeight-24;
     v.textContent=t; if(atBottom) v.scrollTop=v.scrollHeight; }catch(e){} finally{ _logBusy=false; }
 }
 $("#logPause").onclick=()=>{ logPaused=!logPaused; $("#logPause").textContent=logPaused?"Resume":"Pause"; };
 $("#logClear").onclick=()=>{ $("#logView").textContent=""; };
 
-// ---- ROI / polygon editor ----
-const ovl=$("#ovl"), stage=$("#stage");
-let vbW=400, vbH=300;
-function syncViewBox(){
-  vbW=snap.naturalWidth||vbW; vbH=snap.naturalHeight||vbH;
-  ovl.setAttribute("viewBox","0 0 "+vbW+" "+vbH);
-}
-snap.addEventListener("load",()=>{ syncViewBox(); renderRois(); });
-function centroid(p){ let x=0,y=0; p.forEach(q=>{x+=q.x;y+=q.y;}); return {x:x/p.length,y:y/p.length}; }
-function renderRois(){
-  syncViewBox();
-  let s="";
-  rois.forEach((r,i)=>{
-    const sd=st.slots&&st.slots[i];
-    let cls="roi"+(i===sel?" sel":"");
-    if(r.enabled!==false && sd) cls+= sd.occupied?" occ":" free";
-    const pts=r.points.map(p=>(p.x*vbW).toFixed(1)+","+(p.y*vbH).toFixed(1)).join(" ");
-    s+='<polygon class="'+cls+'" points="'+pts+'" data-i="'+i+'"/>';
-    const c=centroid(r.points), lbl=esc(r.name)+(sd&&sd.edge!=null?(" "+sd.edge.toFixed(0)):"");
-    s+='<text class="lbl" x="'+(c.x*vbW).toFixed(1)+'" y="'+(c.y*vbH).toFixed(1)+'" font-size="'+(vbH*0.05).toFixed(1)+'" text-anchor="middle">'+lbl+'</text>';
-    if(i===sel) r.points.forEach((p,j)=>{ s+='<circle class="vh" cx="'+(p.x*vbW).toFixed(1)+'" cy="'+(p.y*vbH).toFixed(1)+'" r="'+(vbW*0.013).toFixed(2)+'" data-i="'+i+'" data-v="'+j+'"/>'; });
-  });
-  ovl.innerHTML=s;
-}
-function selectRoi(i){ sel=i;
-  const ed=$("#roiEditor");
-  if(i<0||i>=rois.length){ ed.style.display="none"; renderRois(); return; }
-  ed.style.display="block"; const r=rois[i];
-  $("#rName").value=r.name; $("#rThr").value=r.threshold||0; $("#rEn").checked=r.enabled!==false;
-  renderRois();
-}
-$("#rName").oninput=()=>{ if(sel>=0){rois[sel].name=$("#rName").value;dirty=true;renderRois();} };
-$("#rThr").oninput=()=>{ if(sel>=0){rois[sel].threshold=parseFloat($("#rThr").value)||0;dirty=true;} };
-$("#rEn").onchange=()=>{ if(sel>=0){rois[sel].enabled=$("#rEn").checked;dirty=true;renderRois();} };
-$("#delRoi").onclick=()=>{ if(sel>=0){rois.splice(sel,1);dirty=true;selectRoi(-1);} };
-$("#addRoi").onclick=()=>{ rois.push({name:"S"+(rois.length+1),points:[{x:.40,y:.40},{x:.60,y:.40},{x:.60,y:.60},{x:.40,y:.60}],threshold:0,enabled:true}); dirty=true; selectRoi(rois.length-1); };
-$("#addPt").onclick=()=>{ if(sel<0)return; const p=rois[sel].points; if(p.length>=8){toast("Max 8 points",true);return;}
-  let bi=0,bd=-1; for(let a=0;a<p.length;a++){ const b=(a+1)%p.length,dx=p[a].x-p[b].x,dy=p[a].y-p[b].y,d=dx*dx+dy*dy; if(d>bd){bd=d;bi=a;} }
-  const nb=(bi+1)%p.length; p.splice(bi+1,0,{x:(p[bi].x+p[nb].x)/2,y:(p[bi].y+p[nb].y)/2}); dirty=true; renderRois(); };
-$("#delPt").onclick=()=>{ if(sel<0)return; const p=rois[sel].points; if(p.length<=3){toast("Min 3 points",true);return;} p.pop(); dirty=true; renderRois(); };
-$("#saveRoi").onclick=async()=>{ try{ await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rois:rois.map(r=>({name:r.name,points:r.points,threshold:r.threshold,enabled:r.enabled}))})}); dirty=false; toast("Slots saved"); await loadCfg(); }catch(e){ toast("Save failed",true);} };
-
-// pointer drag — capture on the stable <svg> so a mid-drag re-render never drops
-// the gesture (the old per-rectangle capture detached on render and "stuck").
-let drag=null;
-ovl.addEventListener("pointerdown",e=>{
-  const t=e.target;
-  if(t.classList&&t.classList.contains("vh")){
-    const i=+t.dataset.i,v=+t.dataset.v; if(sel!==i) selectRoi(i);
-    drag={i,v,mode:"vertex",sx:rois[i].points[v].x,sy:rois[i].points[v].y};
-  } else if(t.tagName&&t.tagName.toLowerCase()==="polygon"){
-    const i=+t.dataset.i; if(sel!==i) selectRoi(i);
-    drag={i,mode:"body",start:rois[i].points.map(p=>({x:p.x,y:p.y}))};
-  } else return;
-  drag.rect=stage.getBoundingClientRect(); drag.ox=e.clientX; drag.oy=e.clientY;
-  ovl.setPointerCapture(e.pointerId); e.preventDefault();
-});
-ovl.addEventListener("pointermove",e=>{
-  if(!drag) return;
-  const dx=(e.clientX-drag.ox)/drag.rect.width, dy=(e.clientY-drag.oy)/drag.rect.height;
-  const r=rois[drag.i];
-  if(drag.mode==="vertex"){
-    r.points[drag.v].x=Math.min(Math.max(0,drag.sx+dx),1);
-    r.points[drag.v].y=Math.min(Math.max(0,drag.sy+dy),1);
-  } else {
-    const xs=drag.start.map(p=>p.x), ys=drag.start.map(p=>p.y);
-    let ax=dx,ay=dy;
-    if(Math.min(...xs)+ax<0) ax=-Math.min(...xs);
-    if(Math.max(...xs)+ax>1) ax=1-Math.max(...xs);
-    if(Math.min(...ys)+ay<0) ay=-Math.min(...ys);
-    if(Math.max(...ys)+ay>1) ay=1-Math.max(...ys);
-    r.points.forEach((p,j)=>{ p.x=drag.start[j].x+ax; p.y=drag.start[j].y+ay; });
-  }
-  dirty=true; renderRois();
-});
-function endDrag(e){ if(drag){ try{ovl.releasePointerCapture(e.pointerId);}catch(_){}} drag=null; }
-ovl.addEventListener("pointerup",endDrag);
-ovl.addEventListener("pointercancel",endDrag);
-
 // ---- state polling ----
 function fmtUp(s){ const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
   return (d?d+"d ":"")+(h?h+"h ":"")+m+"m"; }
+
+// Track whether live cell data has changed to avoid unnecessary re-renders
+let _lastCellsJson="";
 async function poll(){
   try{
     st=await api("/api/state");
@@ -664,32 +1032,38 @@ async function poll(){
     const rp=$("#rssiPill");
     if(st.mode==="ap"){ rp.style.display="none"; }
     else { rp.style.display=""; rp.textContent="📶 "+st.rssi+" dBm"; rp.className="pill "+(st.rssi>=-60?"sta":(st.rssi<=-78?"ap":"")); }
-    const c=st.cv&&st.cv.valid?st.cv.count:null;
-    $("#hCount").textContent=c==null?"–":c; $("#bigCount").textContent=c==null?"–":c;
-    // Live values come from st.slots; the editable geometry lives in `rois` and
-    // is only synced from the server (via loadCfg) when there are no unsaved edits.
-    renderRois();
-    if(st.slots){
-      const tb=$("#slotTable"); tb.innerHTML="";
-      st.slots.forEach((s,i)=>{ const occ=s.enabled===false?"dis":(s.occupied?"occ":"free");
-        const act=s.enabled===false?"":`<button class="btn sm" data-empty="${i}" title="Re-baseline this bay (mark it empty now)">mark empty</button> <button class="btn sm" data-occ="${i}" title="Force this bay occupied now — relative mode re-bases so it sticks, then self-heals when the car leaves">mark occ</button>`;
-        tb.insertAdjacentHTML("beforeend",`<tr><td>${esc(s.name)}</td><td>${s.edge!=null?s.edge.toFixed(1):"–"}</td><td>${s.baselineEdge!=null?s.baselineEdge.toFixed(1):"–"}</td><td>${s.threshold!=null?s.threshold.toFixed(0):"–"}</td><td><span class="dot ${occ}"></span>${s.enabled===false?"disabled":(s.occupied?"occupied":"free")}</td><td>${act}</td></tr>`);
-      });
+
+    // ---- Curb headline (live after T8; shows – until then) ----
+    const curb=st.curb||{};
+    const freeM=curb.free_curb_m!=null?curb.free_curb_m.toFixed(1):"–";
+    $("#hCurbFree").textContent=freeM;
+    $("#curbFreeM").textContent=freeM;
+    $("#curbFit").textContent=curb.can_fit!=null?curb.can_fit:"–";
+    $("#curbEst").textContent=curb.est_free_spaces!=null?curb.est_free_spaces:"–";
+    $("#curbRange").textContent=curb.reliable_range_m!=null?curb.reliable_range_m.toFixed(0)+"m":"–";
+
+    // ---- Per-cell live colouring (after T8) ----
+    // Only re-render when st.cells actually changes to avoid constant DOM churn
+    const cellsJson=JSON.stringify(st.cells||null);
+    if(cellsJson!==_lastCellsJson){
+      _lastCellsJson=cellsJson;
+      if(!dirty){ renderOverlay(); renderCellTable(); }
     }
-    // system
-    $("#sVer").textContent=st.version + (st.build ? " · " + st.build : ""); $("#sUp").textContent=fmtUp(st.uptimeS);
+
+    // ---- system card ----
+    $("#sVer").textContent=st.version+(st.build?" · "+st.build:""); $("#sUp").textContent=fmtUp(st.uptimeS);
     $("#sHeap").textContent=(st.heapFree/1024|0)+" KB"; $("#sPsram").textContent=(st.psramFree/1024|0)+" KB";
     if(st.cv) $("#sCv").textContent=st.cv.valid?`${st.cv.decW}×${st.cv.decH} · ${st.cv.tookMs} ms`:"—";
     if(st.afStatus!=null){ const a=st.afStatus; $("#sAf").textContent=a<0?"n/a":(a===16?"focused":(a===112?"idle":"busy (0x"+a.toString(16)+")")); }
     if(st.mqttEnabled!==undefined){ const t=st.mqttEnabled?(st.mqttConnected?"connected":"connecting…"):"off"; $("#sMqtt").textContent=t; const ms=$("#mqttStat"); if(ms)ms.textContent=t; }
-    if(st.lastSend && st.lastSend.code) $("#lastSend").textContent=`Last send: ${st.lastSend.event} · count ${st.lastSend.count} · HTTP ${st.lastSend.code} · ${st.lastSend.agoS}s ago`;
-    if(st.spoolQueued!=null){ const sp=$("#spoolStat"); if(sp) sp.textContent = st.spoolMode===0 ? "Spool off" : `Queued: ${st.spoolQueued} · ${(st.spoolBytes/1024).toFixed(1)} KB`; }
-    $("#pwBanner").classList.toggle("show", !!st.mustChangePass);
+    if(st.lastSend&&st.lastSend.code) $("#lastSend").textContent=`Last send: ${st.lastSend.event} · count ${st.lastSend.count} · HTTP ${st.lastSend.code} · ${st.lastSend.agoS}s ago`;
+    if(st.spoolQueued!=null){ const sp=$("#spoolStat"); if(sp) sp.textContent=st.spoolMode===0?"Spool off":`Queued: ${st.spoolQueued} · ${(st.spoolBytes/1024).toFixed(1)} KB`; }
+    $("#pwBanner").classList.toggle("show",!!st.mustChangePass);
   }catch(e){ $("#modePill").textContent="offline"; }
 }
 
 // ---- boot ----
-(async()=>{ await poll(); await loadCfg(); renderRois();
+(async()=>{ await poll(); await loadCfg();
   refreshSnap(); pollLog(); startPolling(); })();
 </script>
 </body>
