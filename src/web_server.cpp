@@ -115,19 +115,27 @@ static void handleState() {
   doc["spoolQueued"]    = spQ;
   doc["spoolBytes"]     = spB;
 
+  // doc["cv"] — diagnostics panel (#sCv: valid/decW/decH/tookMs)
   JsonObject cv = doc["cv"].to<JsonObject>();
   cv["valid"]  = g_last->valid;
-  // TODO(T6-T10): replace cv["count"] with curb headline in Task C3.3
-  cv["count"]  = g_last->est_free_spaces;
   cv["decW"]   = g_last->decW;
   cv["decH"]   = g_last->decH;
   cv["tookMs"] = g_last->tookMs;
 
-  // TODO(T6-T10): full curb cells/strips state emitted in Task C3.3.
-  // For now emit per-cell data using the new struct so the UI has something.
-  JsonArray slots = doc["slots"].to<JsonArray>();
+  // doc["curb"] — headline (poll() reads st.curb.*: free_curb_m/can_fit/est_free_spaces/reliable_range_m)
+  JsonObject curb = doc["curb"].to<JsonObject>();
+  curb["free_curb_m"]        = g_last->free_curb_m;
+  curb["longest_free_run_m"] = g_last->longest_free_run_m;
+  curb["can_fit"]            = g_last->can_fit;
+  curb["est_free_spaces"]    = g_last->est_free_spaces;
+  curb["reliable_range_m"]   = g_last->reliable_range_m;
+  curb["occupied_fraction"]  = g_last->occupied_fraction;
+  curb["dark"]               = g_last->dark;
+
+  // doc["cells"] — per-cell array (renderOverlay/renderCellTable reads st.cells[i].occupied etc.)
+  JsonArray cells = doc["cells"].to<JsonArray>();
   for (int i = 0; i < g_cfg->cellCount && i < MAX_CELLS; i++) {
-    JsonObject o = slots.add<JsonObject>();
+    JsonObject o = cells.add<JsonObject>();
     const CurbCell& cell = g_cfg->cells[i];
     o["enabled"] = cell.enabled;
     o["strip"]   = cell.strip;
