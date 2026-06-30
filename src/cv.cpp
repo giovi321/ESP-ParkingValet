@@ -7,6 +7,11 @@
 
 void CvEngine::begin(const Config* cfg) {
   _cfg = cfg;
+  // Initialise learning state here (not in reset): a geometry/debounce reset must
+  // not wipe slowly-accumulated pitch observations.
+  _carPitchLearned = 0.0f;
+  _learnSamples    = 0;
+  for (int i = 0; i < MAX_CELLS; i++) _learnEpisodeActive[i] = false;
   reset();
 }
 
@@ -62,8 +67,8 @@ void CvEngine::snapshotState(CurbPersist& o) const {
     o.baselineInit[i] = _baselineInit[i] ? 1 : 0;
     o.committed[i]    = _committed[i] ? 1 : 0;
   }
-  o.carPitchLearned = 0.0f;   // placeholder for Task C4.1
-  o.learnSamples    = 0;      // placeholder for Task C4.1
+  o.carPitchLearned = _carPitchLearned;   // Task C4.1
+  o.learnSamples    = _learnSamples;      // Task C4.1
 }
 
 bool CvEngine::restoreState(const CurbPersist& in) {
@@ -77,6 +82,10 @@ bool CvEngine::restoreState(const CurbPersist& in) {
     _stableCnt[i]    = 0;
     _lastEdge[i]     = _baselineEdge[i];              // plausible until the first analyze() runs
   }
+  // Restore auto-learn state (Task C4.1). The geomSig gate above already guarantees
+  // the stored values belong to the same ROI layout; a re-trace drops them correctly.
+  _carPitchLearned = in.carPitchLearned;
+  _learnSamples    = in.learnSamples;
   // Adopt the current signature so the first analyze() doesn't see a "changed
   // geometry" (member starts 0) and reset() away everything we just restored.
   _roiSig = roiSignature();
@@ -351,8 +360,6 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   float luma_sum           = 0.0f;
   int   luma_cnt           = 0;
   int   raw_spaces         = 0;
-  const float pitch = (_cfg->carPitchM > 0.0f) ? _cfg->carPitchM : 6.0f;
-
   // Single pass over all cells: reliable_range_m, fraction accumulators, luma sum.
   for (int i = 0; i < nCells; i++) {
     reliable_range_m += _cfg->cells[i].lenM;
@@ -363,6 +370,72 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
       luma_cnt++;
     }
   }
+
+  // ── Auto-learn car-pitch refiner (Task C4.1) ──
+  // Reset episode flag for every cell that is no longer occupied (car has left).
+  // This re-arms the slot so a newly-arriving car generates a fresh observation.
+  for (int i = 0; i < nCells; i++) {
+    if (!out.cells[i].occupied) _learnEpisodeActive[i] = false;
+  }
+  // Scan each strip for isolated occupied runs and fold one slow-EMA observation
+  // per new parking episode.
+  //   Anti-double-count proxy: _learnEpisodeActive[cell] is set true when a run is
+  //   accepted and stays true until the cell goes free.  A run is skipped while ANY
+  //   of its cells has an active episode, so one long-parked car cannot drive
+  //   _learnSamples to 30 by itself — it contributes exactly one sample.
+  //   (A median/lowest-dense-cluster would be more robust than EMA; the [3.0, 6.5] m
+  //    band filter is the primary outlier guard for this revision.)
+  if (_cfg->pitchLearn) {
+    for (int si = 0; si < _cfg->stripCount && si < MAX_STRIPS; si++) {
+      int idx[MAX_CELLS]; int ni = 0;
+      for (int i = 0; i < nCells; i++) {
+        if (_cfg->cells[i].strip == (uint8_t)si)
+          idx[ni++] = i;
+      }
+      int k = 0;
+      while (k < ni) {
+        int ci = idx[k];
+        if (_cfg->cells[ci].enabled && out.cells[ci].occupied) {
+          // Accumulate a maximal contiguous run of enabled+occupied cells.
+          int   rstart       = k;
+          float footprint    = 0.0f;
+          bool  episodeActive = false;
+          while (k < ni && _cfg->cells[idx[k]].enabled && out.cells[idx[k]].occupied) {
+            footprint += _cfg->cells[idx[k]].lenM;
+            if (_learnEpisodeActive[idx[k]]) episodeActive = true;
+            k++;
+          }
+          int rend = k - 1;
+          // Isolated: not at strip edges; bounded on both sides by enabled+free cells.
+          bool isolated = (rstart > 0) && (rend < ni - 1) &&
+            (_cfg->cells[idx[rstart - 1]].enabled && !out.cells[idx[rstart - 1]].occupied) &&
+            (_cfg->cells[idx[rend + 1]].enabled   && !out.cells[idx[rend + 1]].occupied);
+          // Band filter: 3.0–6.5 m rejects noise, motorcycles, and multi-car blobs.
+          bool inBand = (footprint >= 3.0f && footprint <= 6.5f);
+          if (isolated && inBand && !episodeActive) {
+            float pitchObs = footprint + _cfg->clearInteriorM;
+            // Slow EMA, alpha 0.05; first sample bootstraps directly (no zero-pull).
+            if (_learnSamples == 0) {
+              _carPitchLearned = pitchObs;
+            } else {
+              _carPitchLearned += 0.05f * (pitchObs - _carPitchLearned);
+            }
+            if (_learnSamples < 0xFFFF) _learnSamples++;
+            // Mark all cells in the accepted run so this episode is not re-folded.
+            for (int m = rstart; m <= rend; m++) _learnEpisodeActive[idx[m]] = true;
+          }
+        } else {
+          k++;
+        }
+      }
+    }
+  }
+
+  // Pitch: use learned value when gated (pitchLearn on, >= 30 samples, valid);
+  // otherwise fall back to the configured default (or 6.0 m if unset).
+  const float pitch = (_cfg->pitchLearn && _learnSamples >= 30 && _carPitchLearned > 0.0f)
+                      ? _carPitchLearned
+                      : (_cfg->carPitchM > 0.0f ? _cfg->carPitchM : 6.0f);
 
   // Per-strip free-gap run scan.
   for (int si = 0; si < _cfg->stripCount && si < MAX_STRIPS; si++) {

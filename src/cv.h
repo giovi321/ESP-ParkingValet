@@ -82,6 +82,10 @@ class CvEngine {
   void snapshotState(CurbPersist& out) const;
   bool restoreState(const CurbPersist& in);
 
+  // Auto-learn refiner accessors (Task C4.1).
+  float    learnedPitch() const { return _carPitchLearned; }
+  uint16_t learnSamples() const { return _learnSamples; }
+
  private:
   const Config* _cfg = nullptr;
 
@@ -99,6 +103,11 @@ class CvEngine {
   float    _lastEdge[MAX_CELLS];    // most recent per-cell edge (for markOccupied)
 
   uint32_t _roiSig = 0;   // signature of current cell geometry, to detect changes
+
+  // Auto-learn car-pitch refiner (Task C4.1):
+  float    _carPitchLearned;               // learned pitch (m); 0 = not yet learned
+  uint16_t _learnSamples;                  // accepted isolated-car observations (gate >= 30)
+  bool     _learnEpisodeActive[MAX_CELLS]; // anti-double-count: episode active per cell
 
   // Stability hold for est_free_spaces (T5): keeps the published integer from
   // flapping ±1 as a vehicle passes or light shifts.  Biases to UNDER-count
