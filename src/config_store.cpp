@@ -2,6 +2,97 @@
 #include <Preferences.h>
 #include <memory>
 
+// ---- field tables ---------------------------------------------------------
+// One table per field shape drives defaults, (de)serialization and the secret
+// mask, so a new setting is a single line instead of four coordinated edits.
+// Two fields are handled explicitly outside the tables because they need custom
+// logic: apPass (WPA2 length guard) and pitchLearn (accept a JSON boolean). The
+// strips/cells geometry arrays are structurally different and stay hand-written.
+
+// X(name, defaultCStr, isSecret)
+#define CONFIG_STRINGS(X) \
+  X(staSsid,                "",                    0) \
+  X(staPass,                "",                    1) \
+  X(apSsid,                 DEFAULT_AP_SSID,       0) \
+  X(hostname,               DEFAULT_HOSTNAME,      0) \
+  X(wgPrivateKey,           "",                    1) \
+  X(wgAddress,              "",                    0) \
+  X(wgPeerPublicKey,        "",                    0) \
+  X(wgEndpointHost,         "",                    0) \
+  X(wgAllowedIps,           "",                    0) \
+  X(wgPresharedKey,         "",                    1) \
+  X(adminUser,              DEFAULT_ADMIN_USER,    0) \
+  X(adminPass,              DEFAULT_ADMIN_PASS,    1) \
+  X(whUrl,                  "http://192.168.1.197:5678/webhook/parking-cam", 0) \
+  X(whAuthHeaderName,       "",                    0) \
+  X(whAuthHeaderValue,      "",                    1) \
+  X(statsUrl,               "",                    0) \
+  X(statsAuthHeaderName,    "",                    0) \
+  X(statsAuthHeaderValue,   "",                    1) \
+  X(mqttHost,               "",                    0) \
+  X(mqttUser,               "",                    0) \
+  X(mqttPass,               "",                    1) \
+  X(mqttBaseTopic,          "parking-valet",       0) \
+  X(mqttDiscoveryPrefix,    "homeassistant",       0) \
+  X(captureUrl,             "",                    0) \
+  X(captureAuthHeaderName,  "",                    0) \
+  X(captureAuthHeaderValue, "",                    1)
+
+// X(ctype, name, defaultExpr) — parsed via `c.name = o["name"] | c.name`
+#define CONFIG_SCALARS(X) \
+  X(uint16_t, offlineRebootMin,  0) \
+  X(uint16_t, apRetryMin,        0) \
+  X(bool,     wgEnabled,         false) \
+  X(uint16_t, wgEndpointPort,    51820) \
+  X(uint16_t, wgKeepalive,       25) \
+  X(bool,     mustChangePass,    true) \
+  X(bool,     whEnabled,         false) \
+  X(bool,     whTlsInsecure,     true) \
+  X(uint8_t,  spoolMode,         SPOOL_COUNT) \
+  X(uint16_t, spoolMaxEntries,   20) \
+  X(uint16_t, spoolMaxKB,        96) \
+  X(uint8_t,  spoolBackend,      SPOOL_BACKEND_AUTO) \
+  X(bool,     statsEnabled,      false) \
+  X(bool,     statsTlsInsecure,  true) \
+  X(uint32_t, statsIntervalS,    300) \
+  X(bool,     mqttEnabled,       false) \
+  X(uint16_t, mqttPort,          1883) \
+  X(bool,     mqttTls,           false) \
+  X(bool,     mqttTlsInsecure,   true) \
+  X(bool,     mqttDiscovery,     true) \
+  X(uint16_t, mqttIntervalS,     60) \
+  X(uint8_t,  triggerMode,       TRIG_ANY_CHANGE) \
+  X(int,      triggerThreshold,  1) \
+  X(uint32_t, minSendIntervalMs, 5000) \
+  X(uint32_t, heartbeatIntervalS,0) \
+  X(uint16_t, captureIntervalMs, 1500) \
+  X(uint8_t,  stableFrames,      4) \
+  X(uint8_t,  occupancyMode,     OCCUPANCY_RELATIVE) \
+  X(float,    edgeThreshold,     12.0f) \
+  X(float,    relDelta,          6.0f) \
+  X(float,    hysteresis,        0.25f) \
+  X(float,    baselineEma,       0.02f) \
+  X(uint8_t,  occupancyEngine,   0) \
+  X(bool,     trainCapture,      false) \
+  X(bool,     captureTlsInsecure,true) \
+  X(int,      framesize,         9) \
+  X(int,      jpegQuality,       12) \
+  X(bool,     vFlip,             false) \
+  X(bool,     hMirror,           false) \
+  X(int,      brightness,        0) \
+  X(int,      contrast,          0) \
+  X(int,      saturation,        0) \
+  X(bool,     awb,               true) \
+  X(bool,     aec,               true) \
+  X(int,      afMode,            1) \
+  X(int16_t,  tzOffsetMin,       0) \
+  X(float,    carPitchM,         6.0f) \
+  X(float,    clearInteriorM,    1.2f) \
+  X(float,    clearEndM,         1.8f) \
+  X(uint8_t,  smoothMode,        1) \
+  X(float,    darkLumaThresh,    40.0f) \
+  X(uint8_t,  pitchLearn,        1)
+
 // ---- small helpers --------------------------------------------------------
 
 static void setStr(char* dst, size_t cap, const char* src) {
@@ -9,11 +100,10 @@ static void setStr(char* dst, size_t cap, const char* src) {
 }
 
 static bool isSecretKey(const char* k) {
-  return !strcmp(k, "staPass") || !strcmp(k, "apPass") ||
-         !strcmp(k, "adminPass") || !strcmp(k, "whAuthHeaderValue") ||
-         !strcmp(k, "statsAuthHeaderValue") || !strcmp(k, "mqttPass") ||
-         !strcmp(k, "wgPrivateKey") || !strcmp(k, "wgPresharedKey") ||
-         !strcmp(k, "captureAuthHeaderValue");
+#define X(name, def, sec) if ((sec) && !strcmp(k, #name)) return true;
+  CONFIG_STRINGS(X)
+#undef X
+  return !strcmp(k, "apPass");   // secret, handled outside the table
 }
 
 // ---- defaults -------------------------------------------------------------
@@ -22,101 +112,17 @@ void configLoadDefaults(Config& c) {
   memset(&c, 0, sizeof(Config));
   c.version = CONFIG_VERSION;
 
-  setStr(c.staSsid,  sizeof(c.staSsid),  "");
-  setStr(c.staPass,  sizeof(c.staPass),  "");
-  setStr(c.apSsid,   sizeof(c.apSsid),   DEFAULT_AP_SSID);
-  setStr(c.apPass,   sizeof(c.apPass),   DEFAULT_AP_PASS);
-  setStr(c.hostname, sizeof(c.hostname), DEFAULT_HOSTNAME);
-  c.offlineRebootMin = 0;
-  c.apRetryMin = 0;
-
-  c.wgEnabled = false;
-  setStr(c.wgPrivateKey,    sizeof(c.wgPrivateKey),    "");
-  setStr(c.wgAddress,       sizeof(c.wgAddress),       "");
-  setStr(c.wgPeerPublicKey, sizeof(c.wgPeerPublicKey), "");
-  setStr(c.wgEndpointHost,  sizeof(c.wgEndpointHost),  "");
-  c.wgEndpointPort = 51820;
-  setStr(c.wgAllowedIps,    sizeof(c.wgAllowedIps),    "");
-  setStr(c.wgPresharedKey,  sizeof(c.wgPresharedKey),  "");
-  c.wgKeepalive = 25;
-
-  setStr(c.adminUser, sizeof(c.adminUser), DEFAULT_ADMIN_USER);
-  setStr(c.adminPass, sizeof(c.adminPass), DEFAULT_ADMIN_PASS);
-  c.mustChangePass = true;
-
-  c.whEnabled = false;
-  setStr(c.whUrl, sizeof(c.whUrl), "http://192.168.1.197:5678/webhook/parking-cam");
-  setStr(c.whAuthHeaderName,  sizeof(c.whAuthHeaderName),  "");
-  setStr(c.whAuthHeaderValue, sizeof(c.whAuthHeaderValue), "");
-  c.whTlsInsecure = true;
-
-  c.spoolMode       = SPOOL_COUNT;          // count-only: durable, deep queue
-  c.spoolMaxEntries = 20;
-  c.spoolMaxKB      = 96;
-  c.spoolBackend    = SPOOL_BACKEND_AUTO;
-
-  c.statsEnabled = false;
-  setStr(c.statsUrl, sizeof(c.statsUrl), "");
-  setStr(c.statsAuthHeaderName,  sizeof(c.statsAuthHeaderName),  "");
-  setStr(c.statsAuthHeaderValue, sizeof(c.statsAuthHeaderValue), "");
-  c.statsTlsInsecure = true;
-  c.statsIntervalS   = 300;
-
-  c.mqttEnabled = false;
-  setStr(c.mqttHost, sizeof(c.mqttHost), "");
-  c.mqttPort = 1883;
-  c.mqttTls = false;
-  c.mqttTlsInsecure = true;
-  setStr(c.mqttUser, sizeof(c.mqttUser), "");
-  setStr(c.mqttPass, sizeof(c.mqttPass), "");
-  setStr(c.mqttBaseTopic, sizeof(c.mqttBaseTopic), "parking-valet");
-  c.mqttDiscovery = true;
-  setStr(c.mqttDiscoveryPrefix, sizeof(c.mqttDiscoveryPrefix), "homeassistant");
-  c.mqttIntervalS = 60;
-
-  c.triggerMode        = TRIG_ANY_CHANGE;
-  c.triggerThreshold   = 1;
-  c.minSendIntervalMs  = 5000;
-  c.heartbeatIntervalS = 0;
-
-  c.captureIntervalMs = 1500;
-  c.stableFrames      = 4;
-  c.occupancyMode     = OCCUPANCY_RELATIVE;
-  c.edgeThreshold     = 12.0f;
-  c.relDelta          = 6.0f;
-  c.hysteresis        = 0.25f;
-  c.baselineEma       = 0.02f;
-
-  c.occupancyEngine = 0;
-  c.trainCapture = false;
-  setStr(c.captureUrl, sizeof(c.captureUrl), "");
-  setStr(c.captureAuthHeaderName, sizeof(c.captureAuthHeaderName), "");
-  setStr(c.captureAuthHeaderValue, sizeof(c.captureAuthHeaderValue), "");
-  c.captureTlsInsecure = true;
-
-  c.framesize   = 9;     // FRAMESIZE_SVGA (800x600)
-  c.jpegQuality = 12;
-  c.vFlip       = false;
-  c.hMirror     = false;
-  c.brightness  = 0;
-  c.contrast    = 0;
-  c.saturation  = 0;
-  c.awb         = true;
-  c.aec         = true;
-  c.afMode      = 1;     // focus once at boot (best for a fixed scene)
-  c.tzOffsetMin = 0;     // UTC by default
+#define X(name, def, sec) setStr(c.name, sizeof(c.name), def);
+  CONFIG_STRINGS(X)
+#undef X
+  setStr(c.apPass, sizeof(c.apPass), DEFAULT_AP_PASS);   // explicit: length-guarded on write
+#define X(ty, name, def) c.name = (def);
+  CONFIG_SCALARS(X)
+#undef X
 
   // Curb geometry (empty until user traces strips in the web UI)
   c.stripCount = 0;
   c.cellCount  = 0;
-
-  // Curb tunables
-  c.carPitchM      = 6.0f;
-  c.clearInteriorM = 1.2f;
-  c.clearEndM      = 1.8f;
-  c.smoothMode     = 1;
-  c.darkLumaThresh = 40.0f;
-  c.pitchLearn     = 1;
 }
 
 // ---- full (de)serialization (always includes secrets) ---------------------
@@ -128,97 +134,13 @@ void configLoadDefaults(Config& c) {
 static void serializeSettings(const Config& c, JsonObject o) {
   o["version"] = c.version;
 
-  o["staSsid"]  = c.staSsid;
-  o["staPass"]  = c.staPass;
-  o["apSsid"]   = c.apSsid;
-  o["apPass"]   = c.apPass;
-  o["hostname"] = c.hostname;
-  o["offlineRebootMin"] = c.offlineRebootMin;
-  o["apRetryMin"]       = c.apRetryMin;
-
-  o["wgEnabled"]       = c.wgEnabled;
-  o["wgPrivateKey"]    = c.wgPrivateKey;
-  o["wgAddress"]       = c.wgAddress;
-  o["wgPeerPublicKey"] = c.wgPeerPublicKey;
-  o["wgEndpointHost"]  = c.wgEndpointHost;
-  o["wgEndpointPort"]  = c.wgEndpointPort;
-  o["wgAllowedIps"]    = c.wgAllowedIps;
-  o["wgPresharedKey"]  = c.wgPresharedKey;
-  o["wgKeepalive"]     = c.wgKeepalive;
-
-  o["adminUser"]      = c.adminUser;
-  o["adminPass"]      = c.adminPass;
-  o["mustChangePass"] = c.mustChangePass;
-
-  o["whEnabled"]          = c.whEnabled;
-  o["whUrl"]              = c.whUrl;
-  o["whAuthHeaderName"]   = c.whAuthHeaderName;
-  o["whAuthHeaderValue"]  = c.whAuthHeaderValue;
-  o["whTlsInsecure"]      = c.whTlsInsecure;
-
-  o["spoolMode"]       = c.spoolMode;
-  o["spoolMaxEntries"] = c.spoolMaxEntries;
-  o["spoolMaxKB"]      = c.spoolMaxKB;
-  o["spoolBackend"]    = c.spoolBackend;
-
-  o["statsEnabled"]         = c.statsEnabled;
-  o["statsUrl"]             = c.statsUrl;
-  o["statsAuthHeaderName"]  = c.statsAuthHeaderName;
-  o["statsAuthHeaderValue"] = c.statsAuthHeaderValue;
-  o["statsTlsInsecure"]     = c.statsTlsInsecure;
-  o["statsIntervalS"]       = c.statsIntervalS;
-
-  o["mqttEnabled"]          = c.mqttEnabled;
-  o["mqttHost"]             = c.mqttHost;
-  o["mqttPort"]             = c.mqttPort;
-  o["mqttTls"]              = c.mqttTls;
-  o["mqttTlsInsecure"]      = c.mqttTlsInsecure;
-  o["mqttUser"]             = c.mqttUser;
-  o["mqttPass"]             = c.mqttPass;
-  o["mqttBaseTopic"]        = c.mqttBaseTopic;
-  o["mqttDiscovery"]        = c.mqttDiscovery;
-  o["mqttDiscoveryPrefix"]  = c.mqttDiscoveryPrefix;
-  o["mqttIntervalS"]        = c.mqttIntervalS;
-
-  o["triggerMode"]        = c.triggerMode;
-  o["triggerThreshold"]   = c.triggerThreshold;
-  o["minSendIntervalMs"]  = c.minSendIntervalMs;
-  o["heartbeatIntervalS"] = c.heartbeatIntervalS;
-
-  o["captureIntervalMs"] = c.captureIntervalMs;
-  o["stableFrames"]      = c.stableFrames;
-  o["occupancyMode"]     = c.occupancyMode;
-  o["edgeThreshold"]     = c.edgeThreshold;
-  o["relDelta"]          = c.relDelta;
-  o["hysteresis"]        = c.hysteresis;
-  o["baselineEma"]       = c.baselineEma;
-
-  o["occupancyEngine"]       = c.occupancyEngine;
-  o["trainCapture"]          = c.trainCapture;
-  o["captureUrl"]            = c.captureUrl;
-  o["captureAuthHeaderName"] = c.captureAuthHeaderName;
-  o["captureAuthHeaderValue"]= c.captureAuthHeaderValue;
-  o["captureTlsInsecure"]    = c.captureTlsInsecure;
-
-  o["framesize"]   = c.framesize;
-  o["jpegQuality"] = c.jpegQuality;
-  o["vFlip"]       = c.vFlip;
-  o["hMirror"]     = c.hMirror;
-  o["brightness"]  = c.brightness;
-  o["contrast"]    = c.contrast;
-  o["saturation"]  = c.saturation;
-  o["awb"]         = c.awb;
-  o["aec"]         = c.aec;
-  o["afMode"]      = c.afMode;
-  o["tzOffsetMin"] = c.tzOffsetMin;
-
-  // Curb tunables
-  o["carPitchM"]      = c.carPitchM;
-  o["clearInteriorM"] = c.clearInteriorM;
-  o["clearEndM"]      = c.clearEndM;
-  o["smoothMode"]     = c.smoothMode;
-  o["darkLumaThresh"] = c.darkLumaThresh;
-  o["pitchLearn"]     = c.pitchLearn;
+#define X(name, def, sec) o[#name] = c.name;
+  CONFIG_STRINGS(X)
+#undef X
+  o["apPass"] = c.apPass;
+#define X(ty, name, def) o[#name] = c.name;
+  CONFIG_SCALARS(X)
+#undef X
 }
 
 static void serializeGeom(const Config& c, JsonObject o) {
@@ -257,115 +179,33 @@ static void serializeFull(const Config& c, JsonObject o) {
 
 static void parseFull(Config& c, JsonObjectConst o) {
   // c is pre-seeded with defaults; only overwrite present keys.
-  if (o["staSsid"].is<const char*>())  setStr(c.staSsid,  sizeof(c.staSsid),  o["staSsid"]);
-  if (o["staPass"].is<const char*>())  setStr(c.staPass,  sizeof(c.staPass),  o["staPass"]);
-  if (o["apSsid"].is<const char*>())   setStr(c.apSsid,   sizeof(c.apSsid),   o["apSsid"]);
-  // AP password gates the whole setup surface: accept only empty (keep current) or
-  // a valid WPA2 length (>=8). A too-short value is ignored so the AP is never open.
+  // Strings: apply only when the key is a string (secrets are pre-filtered by
+  // configMergeJson so a masked empty value never lands here).
+#define X(name, def, sec) if (o[#name].is<const char*>()) setStr(c.name, sizeof(c.name), o[#name]);
+  CONFIG_STRINGS(X)
+#undef X
+  // apPass gates the whole setup surface: accept only empty (keep current) or a
+  // valid WPA2 length (>=8) so a too-short value never opens the AP.
   if (o["apPass"].is<const char*>()) {
     const char* v = o["apPass"]; size_t vl = strlen(v);
     if (vl == 0 || vl >= 8) setStr(c.apPass, sizeof(c.apPass), v);
   }
-  if (o["hostname"].is<const char*>()) setStr(c.hostname, sizeof(c.hostname), o["hostname"]);
-  c.offlineRebootMin = o["offlineRebootMin"] | c.offlineRebootMin;
-  c.apRetryMin       = o["apRetryMin"]       | c.apRetryMin;
-
-  c.wgEnabled = o["wgEnabled"] | c.wgEnabled;
-  if (o["wgPrivateKey"].is<const char*>())    setStr(c.wgPrivateKey,    sizeof(c.wgPrivateKey),    o["wgPrivateKey"]);
-  if (o["wgAddress"].is<const char*>())       setStr(c.wgAddress,       sizeof(c.wgAddress),       o["wgAddress"]);
-  if (o["wgPeerPublicKey"].is<const char*>()) setStr(c.wgPeerPublicKey, sizeof(c.wgPeerPublicKey), o["wgPeerPublicKey"]);
-  if (o["wgEndpointHost"].is<const char*>())  setStr(c.wgEndpointHost,  sizeof(c.wgEndpointHost),  o["wgEndpointHost"]);
-  c.wgEndpointPort = o["wgEndpointPort"] | c.wgEndpointPort;
-  if (o["wgAllowedIps"].is<const char*>())    setStr(c.wgAllowedIps,    sizeof(c.wgAllowedIps),    o["wgAllowedIps"]);
-  if (o["wgPresharedKey"].is<const char*>())  setStr(c.wgPresharedKey,  sizeof(c.wgPresharedKey),  o["wgPresharedKey"]);
-  c.wgKeepalive = o["wgKeepalive"] | c.wgKeepalive;
-
-  if (o["adminUser"].is<const char*>()) setStr(c.adminUser, sizeof(c.adminUser), o["adminUser"]);
-  if (o["adminPass"].is<const char*>()) setStr(c.adminPass, sizeof(c.adminPass), o["adminPass"]);
-  c.mustChangePass = o["mustChangePass"] | c.mustChangePass;
-
-  c.whEnabled = o["whEnabled"] | c.whEnabled;
-  if (o["whUrl"].is<const char*>())             setStr(c.whUrl,             sizeof(c.whUrl),             o["whUrl"]);
-  if (o["whAuthHeaderName"].is<const char*>())  setStr(c.whAuthHeaderName,  sizeof(c.whAuthHeaderName),  o["whAuthHeaderName"]);
-  if (o["whAuthHeaderValue"].is<const char*>()) setStr(c.whAuthHeaderValue, sizeof(c.whAuthHeaderValue), o["whAuthHeaderValue"]);
-  c.whTlsInsecure = o["whTlsInsecure"] | c.whTlsInsecure;
-
-  c.spoolMode       = o["spoolMode"]       | c.spoolMode;
-  c.spoolMaxEntries = o["spoolMaxEntries"] | c.spoolMaxEntries;
-  c.spoolMaxKB      = o["spoolMaxKB"]      | c.spoolMaxKB;
-  c.spoolBackend    = o["spoolBackend"]    | c.spoolBackend;
-
-  c.statsEnabled = o["statsEnabled"] | c.statsEnabled;
-  if (o["statsUrl"].is<const char*>())             setStr(c.statsUrl,             sizeof(c.statsUrl),             o["statsUrl"]);
-  if (o["statsAuthHeaderName"].is<const char*>())  setStr(c.statsAuthHeaderName,  sizeof(c.statsAuthHeaderName),  o["statsAuthHeaderName"]);
-  if (o["statsAuthHeaderValue"].is<const char*>()) setStr(c.statsAuthHeaderValue, sizeof(c.statsAuthHeaderValue), o["statsAuthHeaderValue"]);
-  c.statsTlsInsecure = o["statsTlsInsecure"] | c.statsTlsInsecure;
-  c.statsIntervalS   = o["statsIntervalS"]   | c.statsIntervalS;
-
-  c.mqttEnabled = o["mqttEnabled"] | c.mqttEnabled;
-  if (o["mqttHost"].is<const char*>())            setStr(c.mqttHost,            sizeof(c.mqttHost),            o["mqttHost"]);
-  c.mqttPort        = o["mqttPort"]        | c.mqttPort;
-  c.mqttTls         = o["mqttTls"]         | c.mqttTls;
-  c.mqttTlsInsecure = o["mqttTlsInsecure"] | c.mqttTlsInsecure;
-  if (o["mqttUser"].is<const char*>())            setStr(c.mqttUser,            sizeof(c.mqttUser),            o["mqttUser"]);
-  if (o["mqttPass"].is<const char*>())            setStr(c.mqttPass,            sizeof(c.mqttPass),            o["mqttPass"]);
-  if (o["mqttBaseTopic"].is<const char*>())       setStr(c.mqttBaseTopic,       sizeof(c.mqttBaseTopic),       o["mqttBaseTopic"]);
-  c.mqttDiscovery   = o["mqttDiscovery"]   | c.mqttDiscovery;
-  if (o["mqttDiscoveryPrefix"].is<const char*>()) setStr(c.mqttDiscoveryPrefix, sizeof(c.mqttDiscoveryPrefix), o["mqttDiscoveryPrefix"]);
-  c.mqttIntervalS   = o["mqttIntervalS"]   | c.mqttIntervalS;
-
-  c.triggerMode        = o["triggerMode"]        | c.triggerMode;
-  c.triggerThreshold   = o["triggerThreshold"]   | c.triggerThreshold;
-  c.minSendIntervalMs  = o["minSendIntervalMs"]  | c.minSendIntervalMs;
-  c.heartbeatIntervalS = o["heartbeatIntervalS"] | c.heartbeatIntervalS;
-
-  c.captureIntervalMs = o["captureIntervalMs"] | c.captureIntervalMs;
-  c.stableFrames      = o["stableFrames"]      | c.stableFrames;
-  c.occupancyMode     = o["occupancyMode"]     | c.occupancyMode;
-  c.edgeThreshold     = o["edgeThreshold"]     | c.edgeThreshold;
-  c.relDelta          = o["relDelta"]          | c.relDelta;
-  c.hysteresis        = o["hysteresis"]        | c.hysteresis;
-  c.baselineEma       = o["baselineEma"]       | c.baselineEma;
-  c.hysteresis        = constrain(c.hysteresis,  0.0f, 0.9f);
-  c.baselineEma       = constrain(c.baselineEma, 0.0f, 1.0f);   // |1-a|<=1 so the EMA can't diverge
-
-  c.occupancyEngine = o["occupancyEngine"] | c.occupancyEngine;
-  c.trainCapture    = o["trainCapture"]    | c.trainCapture;
-  if (o["captureUrl"].is<const char*>())             setStr(c.captureUrl,             sizeof(c.captureUrl),             o["captureUrl"]);
-  if (o["captureAuthHeaderName"].is<const char*>())  setStr(c.captureAuthHeaderName,  sizeof(c.captureAuthHeaderName),  o["captureAuthHeaderName"]);
-  if (o["captureAuthHeaderValue"].is<const char*>()) setStr(c.captureAuthHeaderValue, sizeof(c.captureAuthHeaderValue), o["captureAuthHeaderValue"]);
-  c.captureTlsInsecure = o["captureTlsInsecure"] | c.captureTlsInsecure;
-
-  c.framesize   = o["framesize"]   | c.framesize;
-  c.jpegQuality = o["jpegQuality"] | c.jpegQuality;
-  c.vFlip       = o["vFlip"]       | c.vFlip;
-  c.hMirror     = o["hMirror"]     | c.hMirror;
-  c.brightness  = o["brightness"]  | c.brightness;
-  c.contrast    = o["contrast"]    | c.contrast;
-  c.saturation  = o["saturation"]  | c.saturation;
-  c.awb         = o["awb"]         | c.awb;
-  c.aec         = o["aec"]         | c.aec;
-  c.afMode      = o["afMode"]      | c.afMode;
-  c.tzOffsetMin = o["tzOffsetMin"] | c.tzOffsetMin;
-
-  // Curb tunables (merge, then clamp to sane ranges so hostile/buggy input can't
-  // corrupt the headline numbers or diverge the baseline EMA).
-  c.carPitchM      = o["carPitchM"]      | c.carPitchM;
-  c.clearInteriorM = o["clearInteriorM"] | c.clearInteriorM;
-  c.clearEndM      = o["clearEndM"]      | c.clearEndM;
-  c.darkLumaThresh = o["darkLumaThresh"] | c.darkLumaThresh;
+  // Scalars: merge present keys, keep the current value otherwise.
+#define X(ty, name, def) c.name = o[#name] | c.name;
+  CONFIG_SCALARS(X)
+#undef X
+  // pitchLearn is a uint8 flag but the UI sends a JSON boolean for its checkbox;
+  // `bool | uint8_t` above drops it, so accept the boolean form explicitly.
+  if (o["pitchLearn"].is<bool>()) c.pitchLearn = o["pitchLearn"].as<bool>() ? 1 : 0;
+  c.pitchLearn = c.pitchLearn ? 1 : 0;
+  // Clamp so hostile/buggy input can't corrupt the numbers or diverge the EMA.
+  c.hysteresis     = constrain(c.hysteresis,     0.0f, 0.9f);
+  c.baselineEma    = constrain(c.baselineEma,    0.0f, 1.0f);   // |1-a|<=1 so the EMA can't diverge
   c.carPitchM      = constrain(c.carPitchM,      0.5f, 30.0f);
   c.clearInteriorM = constrain(c.clearInteriorM, 0.0f, 10.0f);
   c.clearEndM      = constrain(c.clearEndM,      0.0f, 10.0f);
   c.darkLumaThresh = constrain(c.darkLumaThresh, 0.0f, 255.0f);
-  // smoothMode enum: only 0 (none) and 1 (width-3 median) exist in the firmware.
-  c.smoothMode = o["smoothMode"] | c.smoothMode;
-  if (c.smoothMode > 1) c.smoothMode = 1;
-  // pitchLearn is a uint8 flag; the web UI sends a JSON boolean for its checkbox,
-  // and `bool | uint8_t` would silently drop it — accept both forms.
-  if (o["pitchLearn"].is<bool>())     c.pitchLearn = o["pitchLearn"].as<bool>() ? 1 : 0;
-  else                                c.pitchLearn = o["pitchLearn"] | c.pitchLearn;
-  c.pitchLearn = c.pitchLearn ? 1 : 0;
+  if (c.smoothMode > 1) c.smoothMode = 1;   // only 0=none, 1=width-3 median exist
 
   // Curb strips: pre-seed empty; overwrite only when present, so an old backup
   // without "strips" yields zero strips (user re-traces in the web UI).
@@ -477,15 +317,10 @@ void configFactoryReset() {
 void configToJson(const Config& cfg, JsonObject out, bool includeSecrets) {
   serializeFull(cfg, out);
   if (!includeSecrets) {
-    out["staPass"]           = "";
-    out["apPass"]            = "";
-    out["adminPass"]         = "";
-    out["whAuthHeaderValue"] = "";
-    out["statsAuthHeaderValue"] = "";
-    out["mqttPass"] = "";
-    out["wgPrivateKey"]   = "";
-    out["wgPresharedKey"] = "";
-    out["captureAuthHeaderValue"] = "";
+#define X(name, def, sec) if (sec) out[#name] = "";
+    CONFIG_STRINGS(X)
+#undef X
+    out["apPass"] = "";
   }
 }
 
