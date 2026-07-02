@@ -135,4 +135,18 @@ class CvEngine {
 
   bool ensureBuffers(int w, int h);
   uint32_t roiSignature() const;
+
+  // analyze() pipeline stages (see cv.cpp). Kept as private methods so each stage
+  // has one job and analyze() reads as an orchestrator.
+  // Per-frame decision parameters, computed once and shared by every cell.
+  struct DecideParams {
+    float   globalThr, hys, relDelta, emaRate;
+    bool    relative;
+    uint8_t stableNeed;
+  };
+  // Decode + downscale the JPEG into _rgb/_luma (sets _decW/_decH). False on failure.
+  bool decodeToLuma(const uint8_t* jpg, size_t len, int srcW, int srcH);
+  // Accumulate features for cell i, run the occupied/free decision + debounce +
+  // baseline update, and fill cellRes. Uses _decW/_decH/_luma/_rgb.
+  void analyzeCell(int i, const DecideParams& dp, CellResult& cellRes);
 };

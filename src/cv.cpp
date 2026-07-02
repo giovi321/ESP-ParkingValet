@@ -155,6 +155,164 @@ static int scaleDiv(jpg_scale_t s) {
                case JPG_SCALE_2X: return 2; default: return 1; }
 }
 
+// Stage 1: decode + downscale the JPEG to RGB565, then to a luma buffer.
+bool CvEngine::decodeToLuma(const uint8_t* jpg, size_t len, int srcW, int srcH) {
+  jpg_scale_t scale = pickScale(srcW);
+  int div = scaleDiv(scale);
+  int w = srcW / div, h = srcH / div;
+  if (!ensureBuffers(w, h)) return false;          // sets _decW/_decH
+  if (!jpg2rgb565(jpg, len, _rgb, scale)) return false;
+
+  const uint16_t* px = reinterpret_cast<const uint16_t*>(_rgb);
+  const int npx = w * h;
+  for (int i = 0; i < npx; i++) {
+    uint16_t v = px[i];
+    int r = ((v >> 11) & 0x1F) << 3;
+    int g = ((v >> 5)  & 0x3F) << 2;
+    int b = ( v        & 0x1F) << 3;
+    _luma[i] = (uint8_t)((r * 77 + g * 150 + b * 29) >> 8);
+  }
+  return true;
+}
+
+// Stage 2 (per cell): ray-cast accumulate the in-polygon features, finalize the
+// feature vector, run the occupied/free decision (classifier or relative edge) with
+// hysteresis + debounce, and update the adaptive empty baseline.
+void CvEngine::analyzeCell(int i, const DecideParams& dp, CellResult& cellRes) {
+  const int w = _decW, h = _decH;
+  const uint16_t* px = reinterpret_cast<const uint16_t*>(_rgb);
+  const CurbCell& cell = _cfg->cells[i];
+
+  // CurbCell always has 4 quad vertices (no variable nPoints like the old Roi).
+  const int np = 4;
+  float vx[4], vy[4];
+  float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
+  for (int j = 0; j < np; j++) {
+    vx[j] = cell.px[j] * w; vy[j] = cell.py[j] * h;
+    if (vx[j] < minx) minx = vx[j]; if (vx[j] > maxx) maxx = vx[j];
+    if (vy[j] < miny) miny = vy[j]; if (vy[j] > maxy) maxy = vy[j];
+  }
+  int x0 = constrain((int)floorf(minx), 0, w - 2);
+  int y0 = constrain((int)floorf(miny), 0, h - 2);
+  int x1 = constrain((int)ceilf(maxx),  x0 + 1, w - 1);
+  int y1 = constrain((int)ceilf(maxy),  y0 + 1, h - 1);
+
+  FeatureAccum fa; featureAccumInit(fa);
+  for (int y = y0; y < y1; y++) {
+    const uint8_t* row = &_luma[y * w];
+    const uint8_t* nxt = &_luma[(y + 1) * w];
+    for (int x = x0; x < x1; x++) {
+      // point-in-polygon (ray casting) for the 4-vertex quad
+      bool inside = false;
+      for (int a = 0, b = np - 1; a < np; b = a++) {
+        if (((vy[a] > y) != (vy[b] > y)) &&
+            ((float)x < (vx[b] - vx[a]) * ((float)y - vy[a]) / (vy[b] - vy[a]) + vx[a]))
+          inside = !inside;
+      }
+      if (!inside) continue;
+      int lum = row[x];
+      int gx = abs((int)row[x + 1] - lum);
+      int gy = abs((int)nxt[x]     - lum);
+      fa.gradSum  += (gx + gy);
+      fa.intSum   += lum;
+      fa.intSqSum += (uint32_t)lum * (uint32_t)lum;
+      fa.cnt++;
+      // uniform LBP(8,1): compare 8 neighbours to centre (guard image borders)
+      if (x > 0 && x < w - 1 && y > 0 && y < h - 1) {
+        const uint8_t* r0 = &_luma[(y - 1) * w];
+        uint8_t c_lum = (uint8_t)lum;
+        uint8_t code =
+          ((r0[x - 1] >= c_lum) << 7) | ((r0[x] >= c_lum) << 6) | ((r0[x + 1] >= c_lum) << 5) |
+          ((row[x + 1] >= c_lum) << 4) | ((nxt[x + 1] >= c_lum) << 3) | ((nxt[x] >= c_lum) << 2) |
+          ((nxt[x - 1] >= c_lum) << 1) | ((row[x - 1] >= c_lum) << 0);
+        uint8_t rot = (uint8_t)((code << 1) | (code >> 7));
+        int trans = __builtin_popcount((unsigned)(code ^ rot));
+        if (trans <= 2) fa.lbp[__builtin_popcount((unsigned)code)]++;  // uniform -> bin by set-bits 0..8
+        else            fa.lbp[9]++;                                    // non-uniform
+      }
+      // colour from the matching RGB565 pixel
+      uint16_t cpx = px[y * w + x];
+      int r5 = ((cpx >> 11) & 0x1F) << 3, g6 = ((cpx >> 5) & 0x3F) << 2, b5 = (cpx & 0x1F) << 3;
+      int mx = r5 > g6 ? (r5 > b5 ? r5 : b5) : (g6 > b5 ? g6 : b5);
+      int mn = r5 < g6 ? (r5 < b5 ? r5 : b5) : (g6 < b5 ? g6 : b5);
+      fa.satSum_x1000 += mx ? (int64_t)(mx - mn) * 1000 / mx : 0;
+      fa.brSum += (b5 - r5);
+    }
+  }
+  float edge  = fa.cnt ? (float)fa.gradSum / (float)fa.cnt : 0.0f;
+  float meanI = fa.cnt ? (float)fa.intSum  / (float)fa.cnt : 0.0f;
+  cellRes.edge = edge; cellRes.meanI = meanI;
+  _lastEdge[i] = edge;   // remembered for markOccupied()'s re-base math
+
+  // In relative mode, seed the empty baseline on the very first frame (enabled
+  // cells) BEFORE finalizing features, so the first decision compares against a
+  // real reference (not zero, which would read as instantly occupied) AND feat[1]
+  // (edge above baseline) reads ~0 on the seeding frame rather than the full edge
+  // energy — otherwise the classifier/capture would see a spurious occupied vote.
+  if (dp.relative && cell.enabled && !_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; _warmupLeft = CV_WARMUP_FRAMES; }
+
+  featuresFinalize(fa, _baselineEdge[i], cellRes.feat);
+  cellRes.clfScore = -1.0f;
+  cellRes.inRange  = cell.enabled;
+
+  if (!cell.enabled) {
+    // Keep geometry but do not count; report instantaneous values only.
+    cellRes.rawOccupied = false;
+    cellRes.occupied    = false;
+    cellRes.baselineEdge = _baselineEdge[i];
+    cellRes.inRange      = false;
+    return;
+  }
+
+  // Classifier score whenever a model is embedded (cheap: a few ops).
+  cellRes.clfScore = clfAvailable() ? clfScore(cellRes.feat) : -1.0f;
+
+  // Effective threshold (no per-cell override in curb model; global only).
+  float thr = dp.relative ? dp.relDelta : dp.globalThr;
+
+  bool raw;
+  if (_cfg->occupancyEngine == 1 && cellRes.clfScore >= 0.0f) {
+    // Probability hysteresis around 0.5 (same `hys` fraction as the edge band).
+    float p = cellRes.clfScore;
+    float pen = 0.5f + dp.hys * 0.5f;   // enter-occupied threshold
+    float pex = 0.5f - dp.hys * 0.5f;   // exit-occupied threshold
+    raw = _committed[i] ? (p >= pex) : (p > pen);
+  } else {
+    // Legacy edge engine: absolute edge, or its rise above the empty baseline.
+    float metric = dp.relative ? (edge - _baselineEdge[i]) : edge;
+    float enter  = thr * (1.0f + dp.hys);
+    float exitT  = thr * (1.0f - dp.hys);
+    raw = _committed[i] ? (metric >= exitT) : (metric > enter);
+  }
+  cellRes.rawOccupied = raw;
+
+  // Debounce: require the raw decision to persist before committing.
+  if (raw == _committed[i]) {
+    _stableCnt[i] = 0;
+  } else {
+    if (raw == _lastRaw[i]) {
+      if (_stableCnt[i] < 0xFFFF) _stableCnt[i]++;
+    } else {
+      _stableCnt[i] = 1;
+    }
+    if (_stableCnt[i] >= dp.stableNeed) {
+      _committed[i] = raw;
+      _stableCnt[i] = 0;
+    }
+  }
+  _lastRaw[i] = raw;
+
+  // Adaptive empty-edge baseline: track while committed-empty and stable,
+  // freeze while occupied. In relative mode this is the live reference the
+  // decision subtracts (ambient light drift cancels out).
+  if (!_committed[i] && _stableCnt[i] == 0) {
+    if (!_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; _warmupLeft = CV_WARMUP_FRAMES; }
+    else _baselineEdge[i] += dp.emaRate * (edge - _baselineEdge[i]);
+  }
+  cellRes.baselineEdge = _baselineEdge[i];
+  cellRes.occupied     = _committed[i];
+}
+
 bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbResult& out) {
   uint32_t t0 = millis();
   out.valid = false;
@@ -194,173 +352,27 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
     _roiSig = sig;
   }
 
-  jpg_scale_t scale = pickScale(srcW);
-  int div = scaleDiv(scale);
-  int w = srcW / div, h = srcH / div;
-  if (!ensureBuffers(w, h)) return false;
-  out.decW = w; out.decH = h;
+  // Stage 1: decode + downscale.
+  if (!decodeToLuma(jpg, len, srcW, srcH)) return false;
+  out.decW = _decW; out.decH = _decH;
 
-  if (!jpg2rgb565(jpg, len, _rgb, scale)) return false;
-
-  // RGB565 -> luma
-  const uint16_t* px = reinterpret_cast<const uint16_t*>(_rgb);
-  const int npx = w * h;
-  for (int i = 0; i < npx; i++) {
-    uint16_t v = px[i];
-    int r = ((v >> 11) & 0x1F) << 3;
-    int g = ((v >> 5)  & 0x3F) << 2;
-    int b = ( v        & 0x1F) << 3;
-    _luma[i] = (uint8_t)((r * 77 + g * 150 + b * 29) >> 8);
-  }
-
-  const float globalThr = _cfg->edgeThreshold;
-  const float hys = constrain(_cfg->hysteresis, 0.0f, 0.9f);  // keep exit band positive
-  const uint8_t stableNeed = _cfg->stableFrames ? _cfg->stableFrames : 1;
-  const bool  relative = (_cfg->occupancyMode == OCCUPANCY_RELATIVE);
-  const float relDelta = (_cfg->relDelta > 0.0f) ? _cfg->relDelta : 1.0f;  // floor so the band can't collapse
-  const float emaRate = constrain(_cfg->baselineEma, 0.0f, 1.0f);  // |1-a|<=1 so the EMA can't diverge to Inf/NaN
+  const DecideParams dp{
+    _cfg->edgeThreshold,
+    constrain(_cfg->hysteresis, 0.0f, 0.9f),                 // keep exit band positive
+    (_cfg->relDelta > 0.0f) ? _cfg->relDelta : 1.0f,        // floor so the band can't collapse
+    constrain(_cfg->baselineEma, 0.0f, 1.0f),               // |1-a|<=1 so the EMA can't diverge
+    (_cfg->occupancyMode == OCCUPANCY_RELATIVE),
+    (uint8_t)(_cfg->stableFrames ? _cfg->stableFrames : 1),
+  };
+  const uint8_t stableNeed = dp.stableNeed;
 
   int nCells = (_cfg->cellCount < MAX_CELLS) ? _cfg->cellCount : MAX_CELLS;
   out.nCells = nCells;
 
-  // Per-cell detection loop: reuses the ray-cast accumulator + featuresFinalize +
-  // relative-edge/hysteresis/debounce decision primitives from the bay-era engine.
-  // Full per-cell pipeline (spatial smoothing, headline aggregation) is Task C2.1/C3.1.
-  for (int i = 0; i < nCells; i++) {
-    const CurbCell& cell = _cfg->cells[i];
-    CellResult& cellRes  = out.cells[i];
+  // Stage 2: per-cell features + occupied/free decision + debounce + baseline.
+  for (int i = 0; i < nCells; i++) analyzeCell(i, dp, out.cells[i]);
 
-    // CurbCell always has 4 quad vertices (no variable nPoints like the old Roi).
-    const int np = 4;
-    float vx[4], vy[4];
-    float minx = 1e9f, miny = 1e9f, maxx = -1e9f, maxy = -1e9f;
-    for (int j = 0; j < np; j++) {
-      vx[j] = cell.px[j] * w; vy[j] = cell.py[j] * h;
-      if (vx[j] < minx) minx = vx[j]; if (vx[j] > maxx) maxx = vx[j];
-      if (vy[j] < miny) miny = vy[j]; if (vy[j] > maxy) maxy = vy[j];
-    }
-    int x0 = constrain((int)floorf(minx), 0, w - 2);
-    int y0 = constrain((int)floorf(miny), 0, h - 2);
-    int x1 = constrain((int)ceilf(maxx),  x0 + 1, w - 1);
-    int y1 = constrain((int)ceilf(maxy),  y0 + 1, h - 1);
-
-    FeatureAccum fa; featureAccumInit(fa);
-    for (int y = y0; y < y1; y++) {
-      const uint8_t* row = &_luma[y * w];
-      const uint8_t* nxt = &_luma[(y + 1) * w];
-      for (int x = x0; x < x1; x++) {
-        // point-in-polygon (ray casting) for the 4-vertex quad
-        bool inside = false;
-        for (int a = 0, b = np - 1; a < np; b = a++) {
-          if (((vy[a] > y) != (vy[b] > y)) &&
-              ((float)x < (vx[b] - vx[a]) * ((float)y - vy[a]) / (vy[b] - vy[a]) + vx[a]))
-            inside = !inside;
-        }
-        if (!inside) continue;
-        int lum = row[x];
-        int gx = abs((int)row[x + 1] - lum);
-        int gy = abs((int)nxt[x]     - lum);
-        fa.gradSum  += (gx + gy);
-        fa.intSum   += lum;
-        fa.intSqSum += (uint32_t)lum * (uint32_t)lum;
-        fa.cnt++;
-        // uniform LBP(8,1): compare 8 neighbours to centre (guard image borders)
-        if (x > 0 && x < w - 1 && y > 0 && y < h - 1) {
-          const uint8_t* r0 = &_luma[(y - 1) * w];
-          uint8_t c_lum = (uint8_t)lum;
-          uint8_t code =
-            ((r0[x - 1] >= c_lum) << 7) | ((r0[x] >= c_lum) << 6) | ((r0[x + 1] >= c_lum) << 5) |
-            ((row[x + 1] >= c_lum) << 4) | ((nxt[x + 1] >= c_lum) << 3) | ((nxt[x] >= c_lum) << 2) |
-            ((nxt[x - 1] >= c_lum) << 1) | ((row[x - 1] >= c_lum) << 0);
-          uint8_t rot = (uint8_t)((code << 1) | (code >> 7));
-          int trans = __builtin_popcount((unsigned)(code ^ rot));
-          if (trans <= 2) fa.lbp[__builtin_popcount((unsigned)code)]++;  // uniform -> bin by set-bits 0..8
-          else            fa.lbp[9]++;                                    // non-uniform
-        }
-        // colour from the matching RGB565 pixel
-        uint16_t cpx = px[y * w + x];
-        int r5 = ((cpx >> 11) & 0x1F) << 3, g6 = ((cpx >> 5) & 0x3F) << 2, b5 = (cpx & 0x1F) << 3;
-        int mx = r5 > g6 ? (r5 > b5 ? r5 : b5) : (g6 > b5 ? g6 : b5);
-        int mn = r5 < g6 ? (r5 < b5 ? r5 : b5) : (g6 < b5 ? g6 : b5);
-        fa.satSum_x1000 += mx ? (int64_t)(mx - mn) * 1000 / mx : 0;
-        fa.brSum += (b5 - r5);
-      }
-    }
-    float edge  = fa.cnt ? (float)fa.gradSum / (float)fa.cnt : 0.0f;
-    float meanI = fa.cnt ? (float)fa.intSum  / (float)fa.cnt : 0.0f;
-    cellRes.edge = edge; cellRes.meanI = meanI;
-    _lastEdge[i] = edge;   // remembered for markOccupied()'s re-base math
-
-    // In relative mode, seed the empty baseline on the very first frame (enabled
-    // cells) BEFORE finalizing features, so the first decision compares against a
-    // real reference (not zero, which would read as instantly occupied) AND feat[1]
-    // (edge above baseline) reads ~0 on the seeding frame rather than the full edge
-    // energy — otherwise the classifier/capture would see a spurious occupied vote.
-    if (relative && cell.enabled && !_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; _warmupLeft = CV_WARMUP_FRAMES; }
-
-    featuresFinalize(fa, _baselineEdge[i], cellRes.feat);
-    cellRes.clfScore = -1.0f;
-    cellRes.inRange  = cell.enabled;
-
-    if (!cell.enabled) {
-      // Keep geometry but do not count; report instantaneous values only.
-      cellRes.rawOccupied = false;
-      cellRes.occupied    = false;
-      cellRes.baselineEdge = _baselineEdge[i];
-      cellRes.inRange      = false;
-      continue;
-    }
-
-    // Classifier score whenever a model is embedded (cheap: a few ops).
-    cellRes.clfScore = clfAvailable() ? clfScore(cellRes.feat) : -1.0f;
-
-    // Effective threshold (no per-cell override in curb model; global only).
-    float thr = relative ? relDelta : globalThr;
-
-    bool raw;
-    if (_cfg->occupancyEngine == 1 && cellRes.clfScore >= 0.0f) {
-      // Probability hysteresis around 0.5 (same `hys` fraction as the edge band).
-      float p = cellRes.clfScore;
-      float pen = 0.5f + hys * 0.5f;   // enter-occupied threshold
-      float pex = 0.5f - hys * 0.5f;   // exit-occupied threshold
-      raw = _committed[i] ? (p >= pex) : (p > pen);
-    } else {
-      // Legacy edge engine: absolute edge, or its rise above the empty baseline.
-      float metric = relative ? (edge - _baselineEdge[i]) : edge;
-      float enter  = thr * (1.0f + hys);
-      float exitT  = thr * (1.0f - hys);
-      raw = _committed[i] ? (metric >= exitT) : (metric > enter);
-    }
-    cellRes.rawOccupied = raw;
-
-    // Debounce: require the raw decision to persist before committing.
-    if (raw == _committed[i]) {
-      _stableCnt[i] = 0;
-    } else {
-      if (raw == _lastRaw[i]) {
-        if (_stableCnt[i] < 0xFFFF) _stableCnt[i]++;
-      } else {
-        _stableCnt[i] = 1;
-      }
-      if (_stableCnt[i] >= stableNeed) {
-        _committed[i] = raw;
-        _stableCnt[i] = 0;
-      }
-    }
-    _lastRaw[i] = raw;
-
-    // Adaptive empty-edge baseline: track while committed-empty and stable,
-    // freeze while occupied. In relative mode this is the live reference the
-    // decision subtracts (ambient light drift cancels out).
-    if (!_committed[i] && _stableCnt[i] == 0) {
-      if (!_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; _warmupLeft = CV_WARMUP_FRAMES; }
-      else _baselineEdge[i] += emaRate * (edge - _baselineEdge[i]);
-    }
-    cellRes.baselineEdge = _baselineEdge[i];
-    cellRes.occupied     = _committed[i];
-  }
-
-  // ── T5: spatial-median + free-gap reducer + headline + light gate + stability ──
+  // ── Stage 3: spatial-median + free-gap reducer + headline + light gate + stability ──
   // The geometry math now lives in the pure, host-testable curb_reduce.h. Fill its
   // cell view from the config + per-cell decisions and drive the stages from there.
 
