@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include "config_store.h"
+#include "curb_reduce.h"   // pure free-gap reducer (host-testable)
 
 // ---------------------------------------------------------------------------
 // On-device classical CV for curb free-space occupancy.
@@ -98,6 +99,9 @@ class CvEngine {
   uint8_t* _luma = nullptr;
   uint8_t* _rgb  = nullptr;
   int _decW = 0, _decH = 0;
+
+  // reducer cell view (kept off the analyze() stack; refilled each frame)
+  curb_reduce::Cell _rc[MAX_CELLS];
 
   // per-cell persistent state
   bool     _committed[MAX_CELLS];

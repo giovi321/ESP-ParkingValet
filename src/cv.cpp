@@ -13,6 +13,9 @@ static const float    PITCH_LEARN_ALPHA    = 0.05f;  // slow EMA rate toward obs
 static const uint16_t PITCH_LEARN_MIN_K    = 30;     // samples before the learned pitch is trusted
 static const float    DEFAULT_CAR_PITCH_M  = 6.0f;   // fallback when carPitchM is unset
 
+static_assert(curb_reduce::RD_MAX_CELLS  == MAX_CELLS,  "curb_reduce cell cap must match config_store");
+static_assert(curb_reduce::RD_MAX_STRIPS == MAX_STRIPS, "curb_reduce strip cap must match config_store");
+
 void CvEngine::begin(const Config* cfg) {
   _cfg = cfg;
   // Initialise learning state here (not in reset): a geometry/debounce reset must
@@ -358,112 +361,46 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   }
 
   // ── T5: spatial-median + free-gap reducer + headline + light gate + stability ──
+  // The geometry math now lives in the pure, host-testable curb_reduce.h. Fill its
+  // cell view from the config + per-cell decisions and drive the stages from there.
 
-  // 1. Width-3 spatial median per strip (enabled cells only), when smoothMode == 1.
-  //    Reads pre-smooth labels from a stack snapshot so neighbours are unaffected
-  //    by earlier writes in the same pass.  Does NOT touch _committed[] — temporal
-  //    debounce state stays the pre-smooth per-cell value for next-frame continuity.
-  if (_cfg->smoothMode == 1) {
-    for (int si = 0; si < _cfg->stripCount && si < MAX_STRIPS; si++) {
-      int  idx[MAX_CELLS]; int ni = 0;
-      for (int i = 0; i < nCells; i++) {
-        if (_cfg->cells[i].strip == (uint8_t)si && _cfg->cells[i].enabled)
-          idx[ni++] = i;
-      }
-      if (ni < 2) continue;
-      bool snap[MAX_CELLS];
-      for (int k = 0; k < ni; k++) snap[k] = out.cells[idx[k]].occupied;
-      for (int k = 0; k < ni; k++) {
-        bool lo = snap[(k > 0)    ? k - 1 : 0];
-        bool me = snap[k];
-        bool hi = snap[(k < ni-1) ? k + 1 : ni - 1];
-        out.cells[idx[k]].occupied = ((lo ? 1 : 0) + (me ? 1 : 0) + (hi ? 1 : 0)) >= 2;
-      }
-    }
-  }
-
-  // 2 + 3. Free-gap run-length + aggregated headline scalars.
-  float free_curb_m        = 0.0f;
-  float longest_free_run_m = 0.0f;
-  float reliable_range_m   = 0.0f;
-  float enabled_len        = 0.0f;
-  float occupied_len       = 0.0f;
-  float luma_sum           = 0.0f;
-  int   luma_cnt           = 0;
-  int   raw_spaces         = 0;
-  // Single pass over all cells: reliable_range_m, fraction accumulators, luma sum.
+  const int nStrips = (_cfg->stripCount < MAX_STRIPS) ? _cfg->stripCount : MAX_STRIPS;
   for (int i = 0; i < nCells; i++) {
-    if (_cfg->cells[i].enabled) {
-      reliable_range_m += _cfg->cells[i].lenM;
-      enabled_len += _cfg->cells[i].lenM;
-      if (out.cells[i].occupied) occupied_len += _cfg->cells[i].lenM;
-      luma_sum += out.cells[i].meanI;
-      luma_cnt++;
-    }
+    _rc[i].occupied = out.cells[i].occupied;
+    _rc[i].enabled  = _cfg->cells[i].enabled;
+    _rc[i].strip    = _cfg->cells[i].strip;
+    _rc[i].lenM     = _cfg->cells[i].lenM;
   }
 
-  // ── Auto-learn car-pitch refiner (Task C4.1) ──
-  // Scan each strip for isolated occupied runs and fold one slow-EMA observation
-  // per new parking episode.
-  //   Anti-double-count proxy: _learnEpisodeActive[cell] is set true when a run is
-  //   accepted and stays true until the cell goes free.  A run is skipped while ANY
-  //   of its cells has an active episode, so one long-parked car cannot drive
-  //   _learnSamples to 30 by itself — it contributes exactly one sample.
-  //   (A median/lowest-dense-cluster would be more robust than EMA; the [3.0, 6.5] m
-  //    band filter is the primary outlier guard for this revision.)
+  // 1. Spatial median (smoothMode==1); reflect the smoothed labels back into the
+  //    result so the overlay and /api/state show them.  _committed[] is untouched,
+  //    so temporal debounce keeps the pre-smooth value for next-frame continuity.
+  if (_cfg->smoothMode == 1) {
+    curb_reduce::spatialMedian(_rc, nCells, nStrips);
+    for (int i = 0; i < nCells; i++) out.cells[i].occupied = _rc[i].occupied;
+  }
+
+  // Light-gate luma sum needs per-cell meanI, which is a CV feature, not geometry.
+  float luma_sum = 0.0f; int luma_cnt = 0;
+  for (int i = 0; i < nCells; i++) {
+    if (_cfg->cells[i].enabled) { luma_sum += out.cells[i].meanI; luma_cnt++; }
+  }
+
+  // 2. Auto-learn car-pitch refiner (folds one isolated-car observation per episode).
   if (_cfg->pitchLearn) {
-    // Reset episode flag for every cell that is no longer occupied (car has left).
-    // This re-arms the slot so a newly-arriving car generates a fresh observation.
-    for (int i = 0; i < nCells; i++) {
-      if (!out.cells[i].occupied) _learnEpisodeActive[i] = false;
-    }
-    for (int si = 0; si < _cfg->stripCount && si < MAX_STRIPS; si++) {
-      int idx[MAX_CELLS]; int ni = 0;
-      for (int i = 0; i < nCells; i++) {
-        if (_cfg->cells[i].strip == (uint8_t)si)
-          idx[ni++] = i;
-      }
-      int k = 0;
-      while (k < ni) {
-        int ci = idx[k];
-        if (_cfg->cells[ci].enabled && out.cells[ci].occupied) {
-          // Accumulate a maximal contiguous run of enabled+occupied cells.
-          int   rstart       = k;
-          float footprint    = 0.0f;
-          bool  episodeActive = false;
-          while (k < ni && _cfg->cells[idx[k]].enabled && out.cells[idx[k]].occupied) {
-            footprint += _cfg->cells[idx[k]].lenM;
-            if (_learnEpisodeActive[idx[k]]) episodeActive = true;
-            k++;
-          }
-          int rend = k - 1;
-          // Isolated: not at strip edges; bounded on both sides by enabled+free cells.
-          bool isolated = (rstart > 0) && (rend < ni - 1) &&
-            (_cfg->cells[idx[rstart - 1]].enabled && !out.cells[idx[rstart - 1]].occupied) &&
-            (_cfg->cells[idx[rend + 1]].enabled   && !out.cells[idx[rend + 1]].occupied);
-          // Band filter rejects noise, motorcycles, and multi-car blobs.
-          bool inBand = (footprint >= PITCH_BAND_MIN_M && footprint <= PITCH_BAND_MAX_M);
-          if (isolated && inBand && !episodeActive) {
-            float pitchObs = footprint + _cfg->clearInteriorM;
-            // Slow EMA; first sample bootstraps directly (no zero-pull).
-            if (_learnSamples == 0) {
-              _carPitchLearned = pitchObs;
-            } else {
-              _carPitchLearned += PITCH_LEARN_ALPHA * (pitchObs - _carPitchLearned);
-            }
-            if (_learnSamples < 0xFFFF) _learnSamples++;
-            // Mark all cells in the accepted run so this episode is not re-folded.
-            for (int m = rstart; m <= rend; m++) _learnEpisodeActive[idx[m]] = true;
-          }
-        } else {
-          k++;
-        }
-      }
-    }
+    curb_reduce::PitchLearnState ls;
+    ls.carPitchLearned = _carPitchLearned;
+    ls.learnSamples    = _learnSamples;
+    for (int i = 0; i < MAX_CELLS; i++) ls.episodeActive[i] = _learnEpisodeActive[i];
+    curb_reduce::PitchLearnParams lp{ _cfg->clearInteriorM, PITCH_BAND_MIN_M, PITCH_BAND_MAX_M,
+                                      PITCH_LEARN_ALPHA, 0xFFFF };
+    curb_reduce::pitchLearn(_rc, nCells, nStrips, lp, ls);
+    _carPitchLearned = ls.carPitchLearned;
+    _learnSamples    = ls.learnSamples;
+    for (int i = 0; i < MAX_CELLS; i++) _learnEpisodeActive[i] = ls.episodeActive[i];
   }
 
-  // Pitch: use learned value when gated (pitchLearn on, >= 30 samples, valid);
-  // otherwise fall back to the configured default (or 6.0 m if unset).
+  // Pitch: learned when gated (pitchLearn on, >= K samples, valid), else configured.
   const float cfgPitch = (_cfg->carPitchM > 0.0f ? _cfg->carPitchM : DEFAULT_CAR_PITCH_M);
   const bool  pitchGated = (_cfg->pitchLearn && _learnSamples >= PITCH_LEARN_MIN_K && _carPitchLearned > 0.0f);
   const float pitch = pitchGated ? _carPitchLearned : cfgPitch;
@@ -472,57 +409,10 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   out.pitch_samples   = _learnSamples;
   out.pitch_disagree  = pitchGated && (fabsf(_carPitchLearned - cfgPitch) > 0.15f * cfgPitch);
 
-  // Per-strip free-gap run scan.
-  for (int si = 0; si < _cfg->stripCount && si < MAX_STRIPS; si++) {
-    int idx[MAX_CELLS]; int ni = 0;
-    for (int i = 0; i < nCells; i++) {
-      if (_cfg->cells[i].strip == (uint8_t)si)
-        idx[ni++] = i;
-    }
-    // A gap is TERMINAL (uses the larger clearEndM) when it touches a hard zone
-    // boundary at either end: the strip's physical start/end, OR a disabled cell
-    // (dead-zone: driveway/hydrant/out-of-range). It is INTERIOR (clearInteriorM)
-    // only when bounded by an enabled OCCUPIED cell (a parked car) on both sides.
-    // clearEndM > clearInteriorM, so boundary gaps subtract more -> conservative
-    // under-count, matching the spec's safe direction (a dead-zone is "not free").
-    bool  in_run     = false;
-    float run_m      = 0.0f;
-    bool  front_hard = false;   // this run's near end touches a hard boundary
-    for (int k = 0; k < ni; k++) {
-      int ci = idx[k];
-      bool free_cell = _cfg->cells[ci].enabled && !out.cells[ci].occupied;
-      if (free_cell) {
-        if (!in_run) {
-          in_run = true; run_m = 0.0f;
-          front_hard = (k == 0) || !_cfg->cells[idx[k - 1]].enabled;   // strip start or dead-zone wall
-        }
-        run_m += _cfg->cells[ci].lenM;
-      } else {
-        if (in_run) {
-          // Closed before the last cell. Back is hard iff the closing cell is a
-          // dead-zone (disabled); an enabled occupied cell is a soft (car) wall.
-          bool back_hard = !_cfg->cells[ci].enabled;
-          float clr = (front_hard || back_hard) ? _cfg->clearEndM : _cfg->clearInteriorM;
-          free_curb_m += run_m;
-          if (run_m > longest_free_run_m) longest_free_run_m = run_m;
-          if (run_m >= pitch) {
-            int n = (int)floorf((run_m - clr) / pitch);
-            raw_spaces += (n > 0 ? n : 0);
-          }
-          in_run = false; run_m = 0.0f;
-        }
-      }
-    }
-    if (in_run) {
-      // Run exhausted all strip cells → back touches the strip's physical end (hard).
-      free_curb_m += run_m;
-      if (run_m > longest_free_run_m) longest_free_run_m = run_m;
-      if (run_m >= pitch) {
-        int n = (int)floorf((run_m - _cfg->clearEndM) / pitch);
-        raw_spaces += (n > 0 ? n : 0);
-      }
-    }
-  }
+  // 3. Free-gap run-length + aggregated (and per-strip) headline scalars.
+  curb_reduce::Params   rp{ pitch, _cfg->clearInteriorM, _cfg->clearEndM };
+  curb_reduce::Aggregate ag;
+  curb_reduce::aggregate(_rc, nCells, nStrips, rp, ag);
 
   // 4. Light gate: trip dark flag when mean enabled-cell luma is low.
   float meanLuma = luma_cnt ? (luma_sum / (float)luma_cnt) : 0.0f;
@@ -532,29 +422,18 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   out.warming = (_warmupLeft > 0);
   if (_warmupLeft > 0) _warmupLeft--;
 
-  // 5. Reported-integer stability hold (reuses stableNeed from the per-cell loop).
-  //    Keeps est_free_spaces from flapping ±1; biases to UNDER-count (safe side).
-  if (raw_spaces == _reportedSpaces) {
-    _pendingSpaces = -1;
-    _pendingCnt    = 0;
-  } else if (raw_spaces == _pendingSpaces) {
-    if (_pendingCnt < 0xFF) _pendingCnt++;
-    if (_pendingCnt >= stableNeed) {
-      _reportedSpaces = raw_spaces;
-      _pendingCnt     = 0;
-    }
-  } else {
-    _pendingSpaces = raw_spaces;
-    _pendingCnt    = 1;
-  }
+  // 5. Integer stability hold: keep est_free_spaces from flapping +/-1 (under-count safe).
+  curb_reduce::SpacesHold hold{ _reportedSpaces, _pendingSpaces, _pendingCnt };
+  int reported = curb_reduce::spacesHold(ag.raw_spaces, stableNeed, hold);
+  _reportedSpaces = hold.reported; _pendingSpaces = hold.pending; _pendingCnt = hold.cnt;
 
   // Headline aggregation.
-  out.free_curb_m        = free_curb_m;
-  out.longest_free_run_m = longest_free_run_m;
-  out.reliable_range_m   = reliable_range_m;
-  out.can_fit            = (longest_free_run_m >= (pitch - _cfg->clearInteriorM));
-  out.occupied_fraction  = (enabled_len > 0.0f) ? (occupied_len / enabled_len) : 0.0f;
-  out.est_free_spaces    = (_reportedSpaces >= 0) ? _reportedSpaces : raw_spaces;
+  out.free_curb_m        = ag.free_curb_m;
+  out.longest_free_run_m = ag.longest_free_run_m;
+  out.reliable_range_m   = ag.reliable_range_m;
+  out.can_fit            = (ag.longest_free_run_m >= (pitch - _cfg->clearInteriorM));
+  out.occupied_fraction  = (ag.enabled_len > 0.0f) ? (ag.occupied_len / ag.enabled_len) : 0.0f;
+  out.est_free_spaces    = reported;
 
   out.tookMs = millis() - t0;
   out.valid  = true;
