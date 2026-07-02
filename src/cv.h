@@ -37,6 +37,12 @@ struct CurbResult {
   float    reliable_range_m;   // total in-range curb length the camera resolves
   float    occupied_fraction;  // 0..1 over in-range cells
   bool     dark;               // light-confidence gate tripped
+  bool     warming;            // baselines freshly (re)seeded: numbers low-confidence until the EMA settles
+  // Pitch observability (so the configured-vs-observed disagreement is visible; spec §5):
+  float    pitch_m;            // pitch actually used for est_free_spaces this frame
+  float    pitch_learned_m;    // auto-learn refiner estimate (0 = not learned yet)
+  uint16_t pitch_samples;      // accepted isolated-car observations (gate at >= 30)
+  bool     pitch_disagree;     // learned pitch gated AND differs from configured by > 15%
 };
 
 // Per-cell state that must survive a reboot (adaptive baselines).
@@ -114,6 +120,14 @@ class CvEngine {
   int     _reportedSpaces = -1;  // last promoted value (-1 = not yet set)
   int     _pendingSpaces  = -1;  // candidate waiting for stableFrames
   uint8_t _pendingCnt     = 0;   // frames the candidate has held
+
+  // Low-confidence warm-up: armed whenever a cell seeds its empty baseline from an
+  // unknown scene (fresh boot without NVS restore, geometry re-trace, mark-empty),
+  // counts down over the next frames so the headline is flagged until the adaptive
+  // baseline has had a chance to settle (spec: "flagged low-confidence until ...
+  // the adaptive EMA warms up").
+  static const uint16_t CV_WARMUP_FRAMES = 20;
+  uint16_t _warmupLeft = 0;
 
   bool ensureBuffers(int w, int h);
   uint32_t roiSignature() const;

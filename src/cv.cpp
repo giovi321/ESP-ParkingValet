@@ -5,6 +5,14 @@
 #include "img_converters.h"
 #include "esp_heap_caps.h"
 
+// Auto-learn car-pitch refiner tuning (Task C4.1). Named here so the pipeline's
+// tunable constants are discoverable in one place instead of inline literals.
+static const float    PITCH_BAND_MIN_M     = 3.0f;   // reject noise / motorcycles below this footprint
+static const float    PITCH_BAND_MAX_M     = 6.5f;   // reject multi-car blobs above this footprint
+static const float    PITCH_LEARN_ALPHA    = 0.05f;  // slow EMA rate toward observed footprint
+static const uint16_t PITCH_LEARN_MIN_K    = 30;     // samples before the learned pitch is trusted
+static const float    DEFAULT_CAR_PITCH_M  = 6.0f;   // fallback when carPitchM is unset
+
 void CvEngine::begin(const Config* cfg) {
   _cfg = cfg;
   // Initialise learning state here (not in reset): a geometry/debounce reset must
@@ -75,12 +83,17 @@ bool CvEngine::restoreState(const CurbPersist& in) {
   if (in.magic != CURB_PERSIST_MAGIC) return false;
   if (in.geomSig != roiSignature())   return false;   // geometry changed -> ignore, seed live
   for (int i = 0; i < MAX_CELLS; i++) {
-    _baselineEdge[i] = in.baselineEdge[i];
-    _baselineInit[i] = in.baselineInit[i] != 0;
+    float b = in.baselineEdge[i];
+    _baselineEdge[i] = isfinite(b) ? b : 0.0f;        // never restore a NaN/Inf baseline
+    _baselineInit[i] = isfinite(b) && in.baselineInit[i] != 0;
     _committed[i]    = in.committed[i] != 0;
     _lastRaw[i]      = _committed[i];                 // align debounce with the restored commit
     _stableCnt[i]    = 0;
     _lastEdge[i]     = _baselineEdge[i];              // plausible until the first analyze() runs
+    // A cell restored occupied is an already-counted parking episode: arm its
+    // anti-double-count flag so the first post-reboot analyze() does not re-fold
+    // the same parked car into the pitch EMA (learnSamples persists across reboots).
+    _learnEpisodeActive[i] = _committed[i];
   }
   // Restore auto-learn state (Task C4.1). The geomSig gate above already guarantees
   // the stored values belong to the same ROI layout; a re-trace drops them correctly.
@@ -150,6 +163,11 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   out.reliable_range_m   = 0.0f;
   out.occupied_fraction  = 0.0f;
   out.dark               = false;
+  out.warming            = false;
+  out.pitch_m            = 0.0f;
+  out.pitch_learned_m    = _carPitchLearned;
+  out.pitch_samples      = _learnSamples;
+  out.pitch_disagree     = false;
   if (!_cfg || srcW <= 0 || srcH <= 0) return false;
 
   // Skip malformed/truncated frames (missing JPEG SOI/EOI markers) without
@@ -160,9 +178,18 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
     return false;
   }
 
-  // Reset per-cell state if the geometry changed.
+  // Reset per-cell state if the geometry changed. A live re-trace also drops the
+  // auto-learned pitch: it was learned under the OLD metric scale, and the NVS
+  // geomSig guard (which gates the persisted learner) only fires across reboots —
+  // clearing here keeps runtime behaviour consistent with that guard (spec §8).
   uint32_t sig = roiSignature();
-  if (sig != _roiSig) { reset(); _roiSig = sig; }
+  if (sig != _roiSig) {
+    reset();
+    _carPitchLearned = 0.0f;
+    _learnSamples    = 0;
+    for (int i = 0; i < MAX_CELLS; i++) _learnEpisodeActive[i] = false;
+    _roiSig = sig;
+  }
 
   jpg_scale_t scale = pickScale(srcW);
   int div = scaleDiv(scale);
@@ -188,6 +215,7 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   const uint8_t stableNeed = _cfg->stableFrames ? _cfg->stableFrames : 1;
   const bool  relative = (_cfg->occupancyMode == OCCUPANCY_RELATIVE);
   const float relDelta = (_cfg->relDelta > 0.0f) ? _cfg->relDelta : 1.0f;  // floor so the band can't collapse
+  const float emaRate = constrain(_cfg->baselineEma, 0.0f, 1.0f);  // |1-a|<=1 so the EMA can't diverge to Inf/NaN
 
   int nCells = (_cfg->cellCount < MAX_CELLS) ? _cfg->cellCount : MAX_CELLS;
   out.nCells = nCells;
@@ -259,6 +287,14 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
     float meanI = fa.cnt ? (float)fa.intSum  / (float)fa.cnt : 0.0f;
     cellRes.edge = edge; cellRes.meanI = meanI;
     _lastEdge[i] = edge;   // remembered for markOccupied()'s re-base math
+
+    // In relative mode, seed the empty baseline on the very first frame (enabled
+    // cells) BEFORE finalizing features, so the first decision compares against a
+    // real reference (not zero, which would read as instantly occupied) AND feat[1]
+    // (edge above baseline) reads ~0 on the seeding frame rather than the full edge
+    // energy — otherwise the classifier/capture would see a spurious occupied vote.
+    if (relative && cell.enabled && !_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; _warmupLeft = CV_WARMUP_FRAMES; }
+
     featuresFinalize(fa, _baselineEdge[i], cellRes.feat);
     cellRes.clfScore = -1.0f;
     cellRes.inRange  = cell.enabled;
@@ -271,11 +307,6 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
       cellRes.inRange      = false;
       continue;
     }
-
-    // In relative mode, seed the empty baseline on the very first frame so the
-    // first decision compares against a real reference, not zero (which would
-    // read as instantly occupied).
-    if (relative && !_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; }
 
     // Classifier score whenever a model is embedded (cheap: a few ops).
     cellRes.clfScore = clfAvailable() ? clfScore(cellRes.feat) : -1.0f;
@@ -319,8 +350,8 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
     // freeze while occupied. In relative mode this is the live reference the
     // decision subtracts (ambient light drift cancels out).
     if (!_committed[i] && _stableCnt[i] == 0) {
-      if (!_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; }
-      else _baselineEdge[i] += _cfg->baselineEma * (edge - _baselineEdge[i]);
+      if (!_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; _warmupLeft = CV_WARMUP_FRAMES; }
+      else _baselineEdge[i] += emaRate * (edge - _baselineEdge[i]);
     }
     cellRes.baselineEdge = _baselineEdge[i];
     cellRes.occupied     = _committed[i];
@@ -410,15 +441,15 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
           bool isolated = (rstart > 0) && (rend < ni - 1) &&
             (_cfg->cells[idx[rstart - 1]].enabled && !out.cells[idx[rstart - 1]].occupied) &&
             (_cfg->cells[idx[rend + 1]].enabled   && !out.cells[idx[rend + 1]].occupied);
-          // Band filter: 3.0–6.5 m rejects noise, motorcycles, and multi-car blobs.
-          bool inBand = (footprint >= 3.0f && footprint <= 6.5f);
+          // Band filter rejects noise, motorcycles, and multi-car blobs.
+          bool inBand = (footprint >= PITCH_BAND_MIN_M && footprint <= PITCH_BAND_MAX_M);
           if (isolated && inBand && !episodeActive) {
             float pitchObs = footprint + _cfg->clearInteriorM;
-            // Slow EMA, alpha 0.05; first sample bootstraps directly (no zero-pull).
+            // Slow EMA; first sample bootstraps directly (no zero-pull).
             if (_learnSamples == 0) {
               _carPitchLearned = pitchObs;
             } else {
-              _carPitchLearned += 0.05f * (pitchObs - _carPitchLearned);
+              _carPitchLearned += PITCH_LEARN_ALPHA * (pitchObs - _carPitchLearned);
             }
             if (_learnSamples < 0xFFFF) _learnSamples++;
             // Mark all cells in the accepted run so this episode is not re-folded.
@@ -433,9 +464,13 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
 
   // Pitch: use learned value when gated (pitchLearn on, >= 30 samples, valid);
   // otherwise fall back to the configured default (or 6.0 m if unset).
-  const float pitch = (_cfg->pitchLearn && _learnSamples >= 30 && _carPitchLearned > 0.0f)
-                      ? _carPitchLearned
-                      : (_cfg->carPitchM > 0.0f ? _cfg->carPitchM : 6.0f);
+  const float cfgPitch = (_cfg->carPitchM > 0.0f ? _cfg->carPitchM : DEFAULT_CAR_PITCH_M);
+  const bool  pitchGated = (_cfg->pitchLearn && _learnSamples >= PITCH_LEARN_MIN_K && _carPitchLearned > 0.0f);
+  const float pitch = pitchGated ? _carPitchLearned : cfgPitch;
+  out.pitch_m         = pitch;
+  out.pitch_learned_m = _carPitchLearned;
+  out.pitch_samples   = _learnSamples;
+  out.pitch_disagree  = pitchGated && (fabsf(_carPitchLearned - cfgPitch) > 0.15f * cfgPitch);
 
   // Per-strip free-gap run scan.
   for (int si = 0; si < _cfg->stripCount && si < MAX_STRIPS; si++) {
@@ -444,20 +479,30 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
       if (_cfg->cells[i].strip == (uint8_t)si)
         idx[ni++] = i;
     }
-    bool  in_run    = false;
-    float run_m     = 0.0f;
-    bool  run_front = false;   // run started at k==0 (flush against strip's front boundary)
+    // A gap is TERMINAL (uses the larger clearEndM) when it touches a hard zone
+    // boundary at either end: the strip's physical start/end, OR a disabled cell
+    // (dead-zone: driveway/hydrant/out-of-range). It is INTERIOR (clearInteriorM)
+    // only when bounded by an enabled OCCUPIED cell (a parked car) on both sides.
+    // clearEndM > clearInteriorM, so boundary gaps subtract more -> conservative
+    // under-count, matching the spec's safe direction (a dead-zone is "not free").
+    bool  in_run     = false;
+    float run_m      = 0.0f;
+    bool  front_hard = false;   // this run's near end touches a hard boundary
     for (int k = 0; k < ni; k++) {
       int ci = idx[k];
       bool free_cell = _cfg->cells[ci].enabled && !out.cells[ci].occupied;
       if (free_cell) {
-        if (!in_run) { in_run = true; run_m = 0.0f; run_front = (k == 0); }
+        if (!in_run) {
+          in_run = true; run_m = 0.0f;
+          front_hard = (k == 0) || !_cfg->cells[idx[k - 1]].enabled;   // strip start or dead-zone wall
+        }
         run_m += _cfg->cells[ci].lenM;
       } else {
         if (in_run) {
-          // Closed by occupied/disabled cell: run does NOT touch strip's last cell.
-          // Terminal only if it started at k==0 (flush against front boundary).
-          float clr = run_front ? _cfg->clearEndM : _cfg->clearInteriorM;
+          // Closed before the last cell. Back is hard iff the closing cell is a
+          // dead-zone (disabled); an enabled occupied cell is a soft (car) wall.
+          bool back_hard = !_cfg->cells[ci].enabled;
+          float clr = (front_hard || back_hard) ? _cfg->clearEndM : _cfg->clearInteriorM;
           free_curb_m += run_m;
           if (run_m > longest_free_run_m) longest_free_run_m = run_m;
           if (run_m >= pitch) {
@@ -469,7 +514,7 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
       }
     }
     if (in_run) {
-      // Run exhausted all strip cells → terminal at the back boundary (clearEndM).
+      // Run exhausted all strip cells → back touches the strip's physical end (hard).
       free_curb_m += run_m;
       if (run_m > longest_free_run_m) longest_free_run_m = run_m;
       if (run_m >= pitch) {
@@ -482,6 +527,10 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   // 4. Light gate: trip dark flag when mean enabled-cell luma is low.
   float meanLuma = luma_cnt ? (luma_sum / (float)luma_cnt) : 0.0f;
   out.dark = (luma_cnt > 0 && meanLuma < _cfg->darkLumaThresh);
+
+  // 4b. Warm-up gate: flag low-confidence while a freshly-seeded baseline settles.
+  out.warming = (_warmupLeft > 0);
+  if (_warmupLeft > 0) _warmupLeft--;
 
   // 5. Reported-integer stability hold (reuses stableNeed from the per-cell loop).
   //    Keeps est_free_spaces from flapping ±1; biases to UNDER-count (safe side).
