@@ -8,17 +8,7 @@
 #include "clk.h"
 #include "overlay.h"
 
-#ifndef PARKINGCAM_VERSION
-#define PARKINGCAM_VERSION "0.0.0"
-#endif
-#if defined(__has_include)
-#  if __has_include("build_info.h")
-#    include "build_info.h"
-#  endif
-#endif
-#ifndef BUILD_GIT_SHA
-#define BUILD_GIT_SHA "dev"
-#endif
+#include "version.h"  // PARKINGCAM_VERSION + BUILD_GIT_SHA
 
 #include "logbuf.h"   // log macros route to the web console (include last)
 
@@ -43,27 +33,31 @@ static const char* NODE       = "parkingvalet";   // stable HA object_id / uniqu
 static const char* DEVICE_ID  = "esp-parkingvalet";
 static const char* GITHUB_URL = "https://github.com/giovi321/ESP-ParkingValet";
 
-// key, friendly name, device_class, unit, entity_category, icon
-struct Field { const char* key; const char* name; const char* dclass; const char* unit; const char* ecat; const char* icon; };
+// key, friendly name, device_class, unit, entity_category, icon, state_class.
+// state_class "measurement" lets HA keep long-term statistics (graphs, mean/min/max);
+// without it a unit-bearing sensor is excluded from statistics.
+struct Field { const char* key; const char* name; const char* dclass; const char* unit; const char* ecat; const char* icon; const char* scls; };
 static const Field FIELDS[] = {
   // Curb headline sensors (Seams D,E — Task C3.5)
-  {"free_curb_m",         "Free curb",      nullptr,           "m",   nullptr,      "mdi:road"},
-  {"longest_free_run_m",  "Longest gap",    nullptr,           "m",   nullptr,      "mdi:arrow-expand-horizontal"},
-  {"est_free_spaces",     "Free spaces",    nullptr,           nullptr, nullptr,    "mdi:car"},
-  {"reliable_range_m",    "Reliable range", nullptr,           "m",   "diagnostic", "mdi:eye-check"},
-  {"occupied_fraction",   "Occupied",       nullptr,           "%",   nullptr,      "mdi:percent"},
-  {"cell_count",          "Cells",          nullptr,           nullptr, "diagnostic", "mdi:select-group"},
+  {"free_curb_m",         "Free curb",      "distance",        "m",   nullptr,      "mdi:road",                    "measurement"},
+  {"longest_free_run_m",  "Longest gap",    "distance",        "m",   nullptr,      "mdi:arrow-expand-horizontal", "measurement"},
+  {"est_free_spaces",     "Free spaces",    nullptr,           nullptr, nullptr,    "mdi:car",                     "measurement"},
+  {"reliable_range_m",    "Reliable range", "distance",        "m",   "diagnostic", "mdi:eye-check",               "measurement"},
+  {"occupied_fraction",   "Occupied",       nullptr,           "%",   nullptr,      "mdi:percent",                 "measurement"},
+  {"pitch_learned_m",     "Learned pitch",  "distance",        "m",   "diagnostic", "mdi:ruler",                   "measurement"},
+  {"pitch_samples",       "Pitch samples",  nullptr,           nullptr, "diagnostic", "mdi:counter",               "measurement"},
+  {"cell_count",          "Cells",          nullptr,           nullptr, "diagnostic", "mdi:select-group",          nullptr},
   // Diagnostics
-  {"rssi",       "Signal",       "signal_strength", "dBm",   "diagnostic", nullptr},
-  {"ip",         "IP address",   nullptr,           nullptr, "diagnostic", "mdi:ip-network"},
-  {"ssid",       "SSID",         nullptr,           nullptr, "diagnostic", "mdi:wifi"},
-  {"uptime_s",   "Uptime",       "duration",        "s",     "diagnostic", nullptr},
-  {"heap_free",  "Free heap",    "data_size",       "B",     "diagnostic", nullptr},
-  {"psram_free", "Free PSRAM",   "data_size",       "B",     "diagnostic", nullptr},
-  {"mode",       "WiFi mode",    nullptr,           nullptr, "diagnostic", "mdi:access-point"},
-  {"version",    "Firmware",     nullptr,           nullptr, "diagnostic", "mdi:chip"},
-  {"build",      "Build",        nullptr,           nullptr, "diagnostic", "mdi:source-commit"},
-  {"time",       "Last update",  "timestamp",       nullptr, "diagnostic", nullptr},
+  {"rssi",       "Signal",       "signal_strength", "dBm",   "diagnostic", nullptr,               "measurement"},
+  {"ip",         "IP address",   nullptr,           nullptr, "diagnostic", "mdi:ip-network",      nullptr},
+  {"ssid",       "SSID",         nullptr,           nullptr, "diagnostic", "mdi:wifi",            nullptr},
+  {"uptime_s",   "Uptime",       "duration",        "s",     "diagnostic", nullptr,               "total_increasing"},
+  {"heap_free",  "Free heap",    "data_size",       "B",     "diagnostic", nullptr,               "measurement"},
+  {"psram_free", "Free PSRAM",   "data_size",       "B",     "diagnostic", nullptr,               "measurement"},
+  {"mode",       "WiFi mode",    nullptr,           nullptr, "diagnostic", "mdi:access-point",    nullptr},
+  {"version",    "Firmware",     nullptr,           nullptr, "diagnostic", "mdi:chip",            nullptr},
+  {"build",      "Build",        nullptr,           nullptr, "diagnostic", "mdi:source-commit",   nullptr},
+  {"time",       "Last update",  "timestamp",       nullptr, "diagnostic", nullptr,               nullptr},
 };
 static const int NFIELDS = sizeof(FIELDS) / sizeof(FIELDS[0]);
 
@@ -71,12 +65,18 @@ static String baseTopic()  { return String(s_cfg->mqttBaseTopic[0] ? s_cfg->mqtt
 static String availTopic() { return baseTopic() + "/availability"; }
 
 static String fieldValue(const char* k) {
-  // Curb headline
-  if (!strcmp(k, "free_curb_m"))        return String(s_last && s_last->valid ? s_last->free_curb_m        : 0.0f, 1);
-  if (!strcmp(k, "longest_free_run_m")) return String(s_last && s_last->valid ? s_last->longest_free_run_m : 0.0f, 1);
-  if (!strcmp(k, "est_free_spaces"))    return String(s_last && s_last->valid ? s_last->est_free_spaces     : 0);
-  if (!strcmp(k, "reliable_range_m"))   return String(s_last && s_last->valid ? s_last->reliable_range_m   : 0.0f, 1);
-  if (!strcmp(k, "occupied_fraction"))  return String(s_last && s_last->valid ? s_last->occupied_fraction * 100.0f : 0.0f, 0);
+  // Curb headline. When no valid analysis exists yet (before the first frame, or
+  // after a camera-init failure), return "" so publishState() SKIPS the topic
+  // rather than stamping retained zeros into HA history as if they were live
+  // measurements. (Same skip convention already used for "time" before NTP sync.)
+  const bool cvOk = s_last && s_last->valid;
+  if (!strcmp(k, "free_curb_m"))        return cvOk ? String(s_last->free_curb_m,        1) : String("");
+  if (!strcmp(k, "longest_free_run_m")) return cvOk ? String(s_last->longest_free_run_m, 1) : String("");
+  if (!strcmp(k, "est_free_spaces"))    return cvOk ? String(s_last->est_free_spaces)        : String("");
+  if (!strcmp(k, "reliable_range_m"))   return cvOk ? String(s_last->reliable_range_m,   1) : String("");
+  if (!strcmp(k, "occupied_fraction"))  return cvOk ? String(s_last->occupied_fraction * 100.0f, 0) : String("");
+  if (!strcmp(k, "pitch_learned_m"))    return (cvOk && s_last->pitch_samples >= 30) ? String(s_last->pitch_learned_m, 2) : String("");
+  if (!strcmp(k, "pitch_samples"))      return cvOk ? String(s_last->pitch_samples) : String("");
   if (!strcmp(k, "cell_count"))         return String(s_cfg->cellCount);
   // Diagnostics
   if (!strcmp(k, "rssi"))       return String(WiFi.RSSI());
@@ -118,7 +118,7 @@ static uint32_t roiSig() {
 // Publish one HA discovery config (retained) under <prefix>/<component>/<node>/<obj>/config.
 static void publishCfg(const char* component, const String& obj, JsonDocument& d) {
   const String prefix = s_cfg->mqttDiscoveryPrefix[0] ? s_cfg->mqttDiscoveryPrefix : "homeassistant";
-  char payload[640];
+  char payload[896];
   size_t n = serializeJson(d, payload, sizeof(payload));
   String topic = prefix + "/" + component + "/" + NODE + "/" + obj + "/config";
   s_mqtt.publish(topic.c_str(), (const uint8_t*)payload, n, true);
@@ -131,7 +131,7 @@ static void clearCfg(const char* component, const String& obj) {
 
 // Publish HA discovery for the camera and control buttons.
 // Per-strip occupancy binary_sensors and selects have been removed (Task C3.5).
-static void publishBayDiscovery() {
+static void publishCameraAndButtonDiscovery() {
   if (!s_cfg->mqttDiscovery) return;
   const String base = baseTopic();
   const String avty = availTopic();
@@ -171,21 +171,31 @@ static void publishBayDiscovery() {
 }
 
 
+// Purge retained discovery configs from the removed fixed-bay model so HA drops the
+// old entities. Runs once per process (after the first successful connect) rather
+// than on every reconnect — the retained configs only need clearing once. The old
+// firmware published up to MAX_ROIS = 12 bays, so clear all 12 (not MAX_STRIPS = 4).
+static void purgeLegacyBayEntities() {
+  static bool s_purged = false;
+  if (s_purged) return;
+  s_purged = true;
+  const int LEGACY_MAX_BAYS = 12;   // main-branch MAX_ROIS
+  clearCfg("sensor", "count");
+  clearCfg("sensor", "roi_count");
+  for (int i = 0; i < LEGACY_MAX_BAYS; i++) {
+    clearCfg("binary_sensor", String("bay") + i);
+    clearCfg("select",        String("bay") + i + "_set");
+  }
+}
+
 static void publishDiscovery() {
   if (!s_cfg->mqttDiscovery) return;
   const String base   = baseTopic();
   const String avty   = availTopic();
-  const String prefix = s_cfg->mqttDiscoveryPrefix[0] ? s_cfg->mqttDiscoveryPrefix : "homeassistant";
 
-  // Purge stale retained configs from the legacy bay model so HA removes old entities.
-  clearCfg("sensor", "count");
-  clearCfg("sensor", "roi_count");
-  for (int i = 0; i < MAX_STRIPS; i++) {
-    clearCfg("binary_sensor", String("bay") + i);
-    clearCfg("select",        String("bay") + i + "_set");
-  }
+  purgeLegacyBayEntities();
 
-  // Numeric sensors (FIELDS loop)
+  // Numeric sensors (FIELDS loop). Shares publishCfg so there is one buffer size.
   for (int i = 0; i < NFIELDS; i++) {
     const Field& f = FIELDS[i];
     JsonDocument d;
@@ -197,11 +207,9 @@ static void publishDiscovery() {
     if (f.unit)   d["unit_of_meas"] = f.unit;
     if (f.ecat)   d["ent_cat"]      = f.ecat;
     if (f.icon)   d["ic"]           = f.icon;
+    if (f.scls)   d["stat_cla"]     = f.scls;
     addDevice(d.as<JsonObject>());
-    char payload[1024];
-    size_t n = serializeJson(d, payload, sizeof(payload));
-    String topic = prefix + "/sensor/" + NODE + "/" + f.key + "/config";
-    s_mqtt.publish(topic.c_str(), (const uint8_t*)payload, n, true);   // retained
+    publishCfg("sensor", f.key, d);
   }
 
   // Binary sensors: can_fit and dark
@@ -228,8 +236,35 @@ static void publishDiscovery() {
     addDevice(d.as<JsonObject>());
     publishCfg("binary_sensor", "dark", d);
   }
+  {
+    JsonDocument d;
+    d["name"]     = "Pitch disagrees";
+    d["uniq_id"]  = String(NODE) + "_pitch_disagree";
+    d["stat_t"]   = base + "/pitch_disagree";
+    d["avty_t"]   = avty;
+    d["ent_cat"]  = "diagnostic";
+    d["dev_cla"]  = "problem";
+    d["pl_on"]    = "ON";
+    d["pl_off"]   = "OFF";
+    d["ic"]       = "mdi:ruler-square";
+    addDevice(d.as<JsonObject>());
+    publishCfg("binary_sensor", "pitch_disagree", d);
+  }
+  {
+    JsonDocument d;
+    d["name"]     = "Calibrating";
+    d["uniq_id"]  = String(NODE) + "_warming";
+    d["stat_t"]   = base + "/warming";
+    d["avty_t"]   = avty;
+    d["ent_cat"]  = "diagnostic";
+    d["pl_on"]    = "ON";
+    d["pl_off"]   = "OFF";
+    d["ic"]       = "mdi:progress-clock";
+    addDevice(d.as<JsonObject>());
+    publishCfg("binary_sensor", "warming", d);
+  }
 
-  publishBayDiscovery();
+  publishCameraAndButtonDiscovery();
 }
 
 static void publishState() {
@@ -239,11 +274,14 @@ static void publishState() {
     if (!v.length()) continue;   // skip e.g. time before NTP sync
     s_mqtt.publish((base + "/" + FIELDS[i].key).c_str(), v.c_str(), true);   // retained
   }
-  // Binary sensors
-  const char* can_fit_val = (s_last && s_last->valid && s_last->can_fit) ? "ON" : "OFF";
-  const char* dark_val    = (s_last && s_last->valid && s_last->dark)    ? "ON" : "OFF";
-  s_mqtt.publish((base + "/can_fit").c_str(), can_fit_val, true);
-  s_mqtt.publish((base + "/dark").c_str(),    dark_val,    true);
+  // Binary sensors — only when a valid analysis exists, so a fresh boot / camera
+  // failure doesn't stamp retained "no room / not dark" as if measured.
+  if (s_last && s_last->valid) {
+    s_mqtt.publish((base + "/can_fit").c_str(),        s_last->can_fit        ? "ON" : "OFF", true);
+    s_mqtt.publish((base + "/dark").c_str(),           s_last->dark           ? "ON" : "OFF", true);
+    s_mqtt.publish((base + "/pitch_disagree").c_str(), s_last->pitch_disagree ? "ON" : "OFF", true);
+    s_mqtt.publish((base + "/warming").c_str(),        s_last->warming        ? "ON" : "OFF", true);
+  }
 }
 
 static void onMqttMessage(char* topic, uint8_t* payload, unsigned int len) {
@@ -300,6 +338,10 @@ void mqttBegin(const Config* cfg, const CurbResult* last) {
 
 void mqttReconfigure() {
   if (!s_began) return;
+  // A clean MQTT DISCONNECT suppresses the LWT, so publish "offline" ourselves
+  // first — otherwise HA keeps showing the last retained readings as available
+  // after the user disables or repoints MQTT.
+  if (s_mqtt.connected()) s_mqtt.publish(availTopic().c_str(), "offline", true);
   s_mqtt.disconnect();
   if (s_cfg->mqttTls) {
     if (s_cfg->mqttTlsInsecure) s_tls.setInsecure();
@@ -354,7 +396,7 @@ void mqttLoop() {
 
   // Refresh camera/button HA entities when strip/cell geometry changes.
   uint32_t sig = roiSig();
-  if (sig != s_roiSig) { s_roiSig = sig; publishBayDiscovery(); }
+  if (sig != s_roiSig) { s_roiSig = sig; publishCameraAndButtonDiscovery(); }
 
   if (s_photoReq && now - s_lastPhotoMs > PHOTO_MIN_MS) {
     s_photoReq = false; s_lastPhotoMs = now;
