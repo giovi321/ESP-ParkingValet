@@ -7,6 +7,7 @@
 #include "net.h"
 #include "clk.h"
 #include "overlay.h"
+#include "profile.h"
 
 #include "version.h"  // PARKINGCAM_VERSION + BUILD_GIT_SHA
 
@@ -44,6 +45,7 @@ static const Field FIELDS[] = {
   {"est_free_spaces",     "Free spaces",    nullptr,           nullptr, nullptr,    "mdi:car",                     "measurement"},
   {"reliable_range_m",    "Reliable range", "distance",        "m",   "diagnostic", "mdi:eye-check",               "measurement"},
   {"occupied_fraction",   "Occupied",       nullptr,           "%",   nullptr,      "mdi:percent",                 "measurement"},
+  {"typical_free_curb_m", "Typical free (now)", "distance",    "m",   "diagnostic", "mdi:chart-bell-curve",        "measurement"},
   {"pitch_learned_m",     "Learned pitch",  "distance",        "m",   "diagnostic", "mdi:ruler",                   "measurement"},
   {"pitch_samples",       "Pitch samples",  nullptr,           nullptr, "diagnostic", "mdi:counter",               "measurement"},
   {"cell_count",          "Cells",          nullptr,           nullptr, "diagnostic", "mdi:select-group",          nullptr},
@@ -77,6 +79,7 @@ static String fieldValue(const char* k) {
   if (!strcmp(k, "occupied_fraction"))  return cvOk ? String(s_last->occupied_fraction * 100.0f, 0) : String("");
   if (!strcmp(k, "pitch_learned_m"))    return (cvOk && s_last->pitch_samples >= 30) ? String(s_last->pitch_learned_m, 2) : String("");
   if (!strcmp(k, "pitch_samples"))      return cvOk ? String(s_last->pitch_samples) : String("");
+  if (!strcmp(k, "typical_free_curb_m")){ float t = profileTypicalNow(); return t >= 0.0f ? String(t, 1) : String(""); }
   if (!strcmp(k, "cell_count"))         return String(s_cfg->cellCount);
   // Diagnostics
   if (!strcmp(k, "rssi"))       return String(WiFi.RSSI());

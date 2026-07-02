@@ -11,6 +11,7 @@
 #include "spool.h"
 #include "wg.h"
 #include "clf.h"
+#include "profile.h"
 #include "features.h"    // CLF_NFEAT
 #include "web_ui.h"      // index_html_gz / index_html_gz_len (generated)
 #include "logbuf.h"
@@ -137,6 +138,8 @@ static void handleState() {
   curb["pitch_learned_m"]    = g_last->pitch_learned_m;
   curb["pitch_samples"]      = g_last->pitch_samples;
   curb["pitch_disagree"]     = g_last->pitch_disagree;
+  curb["typical_free_curb_m"]  = profileTypicalNow();       // -1 if the current hour is unlearned
+  curb["typical_next_h_m"]     = profileTypicalNextHour();  // -1 if unlearned
   // Per-strip breakdown (diagnostic).
   JsonArray strips = curb["strips"].to<JsonArray>();
   for (int si = 0; si < g_last->nStrips && si < MAX_STRIPS; si++) {

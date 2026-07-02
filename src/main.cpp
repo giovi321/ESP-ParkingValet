@@ -20,6 +20,7 @@
 #include "wg.h"
 #include "capture.h"
 #include "clf.h"
+#include "profile.h"
 #include "version.h"   // PARKINGCAM_VERSION + BUILD_GIT_SHA (folds in generated build_info.h)
 
 static Config     cfg;
@@ -276,6 +277,7 @@ void setup() {
   }
 
   clfBegin();   // load a hot-swapped runtime classifier from NVS, if one was pushed
+  profileBegin(&cfg);   // load the learned per-hour occupancy profile
   cvEngine.begin(&cfg);
   lastResult.valid = false;
 
@@ -342,6 +344,7 @@ void loop() {
     s_cvLastCheckMs = millis();
     cvStatePersist(false);
   }
+  profileLoop();   // throttled, change-gated persist of the learned occupancy profile
 
   uint32_t now = millis();
   if (now - lastCaptureMs >= cfg.captureIntervalMs) {
@@ -351,6 +354,7 @@ void loop() {
       static CurbResult r;
       if (cvEngine.analyze(fb->buf, fb->len, fb->width, fb->height, r)) {
         lastResult = r;
+        profileUpdate(r);
         captureMaybeLog(cfg, r);
         if (!netIsAP()) maybeSend(fb, r);   // only act on triggers when on the real network
         if (r.valid && r.est_free_spaces != lastMqttCount) {
