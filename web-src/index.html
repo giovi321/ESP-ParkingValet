@@ -132,6 +132,7 @@
         <div class="bigcount"><div class="n" id="curbEst">–</div><div class="l">est. spaces</div></div>
         <div class="bigcount"><div class="n" id="curbRange">–</div><div class="l">m range</div></div>
       </div>
+      <div id="curbConf" class="hint" style="display:none;color:var(--warn,#e0a800)"></div>
     </div>
 
     <!-- Strip tracer card -->
@@ -198,7 +199,7 @@
       </div>
       <div class="hint">Watch each cell's live <b>Edge</b> and <b>Baseline</b>. <b>Absolute:</b> set threshold between empty-asphalt edge and parked-car edge. <b>Relative</b> (best for sun vs shade): a cell trips when its Edge rises the <i>delta</i> above its own auto-tracked empty Baseline. Raise <b>Stable frames</b> to ride out moving shadows.</div>
       <div class="btns"><button class="btn" id="recalibrate">Mark all cells empty</button></div>
-      <div class="hint">Snaps the empty Baseline to the current view for every cell. Use only when the whole curb is empty. To re-baseline a single cell, click its chip in the Cells card on the Live tab.</div>
+      <div class="hint">Snaps the empty Baseline to the current view for every cell. Use only when the whole curb is empty. To re-baseline a single cell, right-click its chip (or its polygon) in the Cells card on the Live tab. Left-clicking a chip toggles its dead-zone mask.</div>
     </div>
     <div class="card">
       <h2>Curb geometry &amp; counting</h2>
@@ -213,8 +214,7 @@
       <label>Smoothing mode</label>
       <select id="c_smoothMode">
         <option value="0">None</option>
-        <option value="1">EMA</option>
-        <option value="2">Median window</option>
+        <option value="1">Width-3 median</option>
       </select>
       <div class="chk"><input type="checkbox" id="c_pitchLearn"><label for="c_pitchLearn" style="margin:0;color:var(--txt)">Enable pitch auto-learning from detections</label></div>
       <div class="btns"><button class="btn" id="saveCurbGeom">Save</button></div>
@@ -260,6 +260,7 @@
       <label>Capture URL</label><input type="text" id="c_captureUrl" placeholder="https://…/capture">
       <label>Capture auth header name</label><input type="text" id="c_captureAuthHeaderName" placeholder="e.g. X-API-Key">
       <label>Capture auth header value</label><input type="password" id="c_captureAuthHeaderValue" placeholder="unchanged">
+      <div class="chk"><input type="checkbox" id="c_captureTlsInsecure"><label for="c_captureTlsInsecure" style="margin:0;color:var(--txt)">Skip TLS certificate check (https capture endpoint)</label></div>
       <div class="btns"><button class="btn" id="saveOccEngine">Save</button></div>
       <div class="hint">"Trained classifier" uses the embedded model when present, otherwise falls back to the edge engine. Turn on Training capture to log per-cell feature vectors (throttled ~30 s) to the Capture URL for offline training.</div>
     </div>
@@ -434,7 +435,7 @@
       <div class="hint">If a WiFi join fails the device falls back to this AP for setup. With <b>retry</b> set, it re-attempts the saved WiFi every N minutes and switches back to STA once it reconnects — staying in AP (and looping) until then; this hotspot is briefly unreachable during each attempt. <b>Auto-reboot</b> reboots after the device has been offline this long, as a last-resort recovery — set retry shorter than auto-reboot for it to run first. Either or both; 0 disables.</div>
     </div>
     <div class="card">
-      <h2>WireGuard remote access</h2>
+      <h2>WireGuard remote access <span id="wgStat" class="pill" style="font-size:11px">–</span></h2>
       <label>Enable</label><input type="checkbox" id="c_wgEnabled">
       <label>Private key</label><input type="password" id="c_wgPrivateKey" placeholder="unchanged">
       <label>Address (device tunnel IP, e.g. 10.6.0.7)</label><input type="text" id="c_wgAddress">
@@ -503,6 +504,7 @@ let cellLenM=parseFloat(localStorage.getItem("curbCellLenM")||"2.0");
 let freeze=false, dirty=false, activeTab="live";
 let activeStripIdx=-1, tracingActive=false;
 const MAX_STRIPS=4;
+const MAX_CELLS=48;   // firmware config_store.h MAX_CELLS — cells beyond this are dropped on save
 
 // DOM refs — declared early so all functions close over them
 const snap=$("#snap"), ovl=$("#ovl"), stage=$("#stage");
@@ -530,7 +532,7 @@ const F = [
   "wgEnabled","wgPrivateKey","wgAddress","wgPeerPublicKey","wgEndpointHost","wgEndpointPort","wgAllowedIps","wgPresharedKey","wgKeepalive",
   "framesize","jpegQuality","brightness","contrast","saturation","vFlip","hMirror","awb","aec","afMode","tzOffsetMin",
   "adminUser","adminPass",
-  "occupancyEngine","trainCapture","captureUrl","captureAuthHeaderName","captureAuthHeaderValue",
+  "occupancyEngine","trainCapture","captureUrl","captureAuthHeaderName","captureAuthHeaderValue","captureTlsInsecure",
   // curb geometry keys (T1 config schema)
   "carPitchM","clearInteriorM","clearEndM","smoothMode","darkLumaThresh","pitchLearn"
 ];
@@ -568,13 +570,15 @@ function collect(keys){
 
 async function save(keys, opts){
   const body=JSON.stringify(collect(keys));
-  for(let attempt=1; attempt<=3; attempt++){
-    try{ const r=await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body});
-      toast("Saved"); if(r.reboot) toast("Rebooting…"); if(opts&&opts.after) opts.after(r);
-      await loadCfg(); return;
-    }catch(e){ if(attempt<3) await new Promise(res=>setTimeout(res,300)); }
+  let resp=null, saved=false;
+  for(let attempt=1; attempt<=3 && !saved; attempt++){
+    try{ resp=await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body}); saved=true; }
+    catch(e){ if(attempt<3) await new Promise(res=>setTimeout(res,300)); }
   }
-  toast("Save failed",true);
+  if(!saved){ toast("Save failed",true); return; }
+  toast("Saved"); if(resp.reboot) toast("Rebooting…"); if(opts&&opts.after) opts.after(resp);
+  // Reload OUTSIDE the retry loop: a failed reload must not re-POST the config.
+  try{ await loadCfg(); }catch(_){}
 }
 
 async function loadCfg(){
@@ -674,6 +678,15 @@ function layoutCells(polyline, widthPx, realLenM, gTargetM, stripIndex){
     return {x:pts[last].x, y:pts[last].y, dx:ddx/mag, dy:ddy/mag};
   }
 
+  // Usable-range floor. The spec sets ~7 px of mapped footprint at the ANALYSIS
+  // scale, but the firmware decimates the frame before analysis (pickScale: /4 at
+  // 640-1024 wide, /8 at >=1280). cellArcs[] are in snapshot/viewBox px, so scale
+  // the floor by the decimation factor (snapshotWidth / analysisWidth) — otherwise
+  // a 7 px snapshot arc is <2 analysis px and the far, resolution-starved cells the
+  // spec requires dropping get kept and inflate free_curb_m / reliable_range_m.
+  const _decW=(typeof st!=="undefined"&&st&&st.cv&&st.cv.decW)?st.cv.decW:(vbW/4);
+  const pxFloor=7*Math.max(1,vbW/Math.max(1,_decW));
+
   // Build cell quads
   const result=[];
   let arcPos=0;
@@ -693,11 +706,11 @@ function layoutCells(polyline, widthPx, realLenM, gTargetM, stripIndex){
       {x:s1.x+p1.x*hw, y:s1.y+p1.y*hw},
       {x:s1.x-p1.x*hw, y:s1.y-p1.y*hw}
     ];
-    // Usable-range gate: cells whose arc-length on the image is < 7 px
-    // are too small to be reliable (far end of fisheye range) — drop them.
+    // Usable-range gate: cells whose mapped arc-length is below the analysis-scaled
+    // floor are too small to resolve (far end of the fisheye range) — drop them.
     // The cell array IS the reliable range; the strip visually ends where cells stop.
     arcPos=arcEnd;
-    if(cellArcs[i]<7) continue;
+    if(cellArcs[i]<pxFloor) continue;
     result.push({
       px: quad.map(p=>p.x/vbW),
       py: quad.map(p=>p.y/vbH),
@@ -805,7 +818,7 @@ function renderCellTable(){
       else if(lv&&lv.occupied){ cls="c-occ"; sym="●"; }
       else if(lv&&!lv.occupied){ cls="c-free"; sym="○"; }
       else { cls=""; sym="—"; }
-      html+='<div class="cell-chip '+cls+'" onclick="toggleCell('+i+')" title="Cell '+(i+1)+' · '+cell.lenM.toFixed(1)+'m · strip '+si+(!cell.enabled?' · dead zone':'')+'">'+(i+1)+' '+sym+'</div>';
+      html+='<div class="cell-chip '+cls+'" onclick="toggleCell('+i+')" oncontextmenu="return rebaselineCell(event,'+i+')" title="Cell '+(i+1)+' · '+cell.lenM.toFixed(1)+'m · strip '+si+(!cell.enabled?' · dead zone':'')+' — click: toggle dead zone, right-click: re-baseline">'+(i+1)+' '+sym+'</div>';
     });
     html+='</div></div>';
   });
@@ -839,6 +852,18 @@ function toggleCell(i){
   cells[i].enabled=!cells[i].enabled;
   dirty=true; renderOverlay(); renderCellTable();
 }
+// Right-click a cell chip (or polygon) to re-seed just that cell's empty baseline
+// from the current view — the server action the old hint promised but nothing sent.
+async function rebaselineCell(ev,i){
+  if(ev) ev.preventDefault();
+  if(!cells[i]){ return false; }
+  if(!cells[i].enabled){ toast("Enable the cell first",true); return false; }
+  try{ await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"recalibrate",slot:i})});
+    toast("Cell "+(i+1)+" baseline re-seeded");
+  }catch(e){ toast("Re-baseline failed",true); }
+  return false;
+}
 
 // ---- Strip/cell button handlers ----------------------------------------
 $("#addStrip").onclick=()=>{
@@ -854,15 +879,24 @@ $("#genCells").onclick=()=>{
   cellLenM=isNaN(pitch)||pitch<0.1?2.0:pitch;
   localStorage.setItem("curbCellLenM",cellLenM);
   let newCells=[];
-  let ok=true;
   const shortStrips=[];
   strips.forEach((str,si)=>{
-    if(str.pts.length<2){ shortStrips.push(str.name); ok=false; return; }
+    if(str.pts.length<2){
+      // Untraced this session (polyline points are session-only): KEEP this strip's
+      // already-saved cells instead of dropping them, so regenerating one strip does
+      // not wipe another strip's calibrated layout.
+      shortStrips.push(str.name);
+      newCells=newCells.concat(cells.filter(c=>c.strip===si));
+      return;
+    }
     const gen=layoutCells(str.pts, str.widthPx||40, str.realLenM, cellLenM, si);
     newCells=newCells.concat(gen);
   });
-  if(shortStrips.length) toast("Need ≥ 2 pts: "+shortStrips.join(", "),true);
-  if(!ok && newCells.length===0) return;
+  if(newCells.length>MAX_CELLS){
+    newCells=newCells.slice(0,MAX_CELLS);
+    toast("Capped at "+MAX_CELLS+" cells — increase target cell length",true);
+  }
+  if(shortStrips.length) toast("Kept saved cells for untraced: "+shortStrips.join(", "),true);
   cells=newCells;
   dirty=true; renderOverlay(); renderCellTable();
   toast("Generated "+cells.length+" cell"+(cells.length!==1?"s":""));
@@ -879,13 +913,14 @@ $("#saveStrips").onclick=async()=>{
     px:c.px.map(r4), py:c.py.map(r4), lenM:c.lenM, strip:c.strip, enabled:c.enabled
   }));
   const body=JSON.stringify({strips:stripsPayload, cells:cellsPayload});
-  for(let attempt=1;attempt<=3;attempt++){
-    try{
-      await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body});
-      dirty=false; toast("Strips & cells saved"); await loadCfg(); return;
-    }catch(e){ if(attempt<3) await new Promise(res=>setTimeout(res,300)); }
+  let saved=false;
+  for(let attempt=1;attempt<=3 && !saved;attempt++){
+    try{ await api("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body}); saved=true; }
+    catch(e){ if(attempt<3) await new Promise(res=>setTimeout(res,300)); }
   }
-  toast("Save failed",true);
+  if(!saved){ toast("Save failed",true); return; }
+  dirty=false; toast("Strips & cells saved");
+  try{ await loadCfg(); }catch(_){}   // reload outside the retry so a failed reload doesn't re-POST
 };
 
 $("#markAllEmpty").onclick=async()=>{
@@ -908,6 +943,12 @@ $("#freezeBtn").onclick=()=>{ freeze=!freeze; $("#freezeBtn").textContent=freeze
 
 // ---- SVG pointer events ------------------------------------------------
 let drag=null;
+// Right-click a cell polygon to re-baseline just that cell (mirrors the chip).
+ovl.addEventListener("contextmenu",e=>{
+  const t=e.target;
+  if(t&&t.dataset&&t.dataset.ci!==undefined){ rebaselineCell(e,parseInt(t.dataset.ci,10)); }
+});
+
 ovl.addEventListener("pointerdown",e=>{
   const t=e.target;
 
@@ -990,7 +1031,7 @@ $("#saveAdmin").onclick=()=>save(["adminUser","adminPass"]);
 $("#saveWifi").onclick=()=>save(["staSsid","staPass","hostname","apSsid","apPass"]);
 $("#saveWatchdog").onclick=()=>save(["offlineRebootMin","apRetryMin"]);
 $("#saveWg").onclick=()=>save(["wgEnabled","wgPrivateKey","wgAddress","wgPeerPublicKey","wgEndpointHost","wgEndpointPort","wgAllowedIps","wgPresharedKey","wgKeepalive"]);
-$("#saveOccEngine").onclick=()=>save(["occupancyEngine","trainCapture","captureUrl","captureAuthHeaderName","captureAuthHeaderValue"]);
+$("#saveOccEngine").onclick=()=>save(["occupancyEngine","trainCapture","captureUrl","captureAuthHeaderName","captureAuthHeaderValue","captureTlsInsecure"]);
 $("#testWebhook").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_webhook"})}); toast(r.ok?("Test sent · HTTP "+r.code):("Test failed · "+r.code),!r.ok);}catch(e){toast("Test failed",true);} };
 
 function action(a,msg,confirmMsg){ return async()=>{ if(confirmMsg&&!confirm(confirmMsg)) return;
@@ -1059,14 +1100,22 @@ async function poll(){
     if(st.mode==="ap"){ rp.style.display="none"; }
     else { rp.style.display=""; rp.textContent="📶 "+st.rssi+" dBm"; rp.className="pill "+(st.rssi>=-60?"sta":(st.rssi<=-78?"ap":"")); }
 
-    // ---- Curb headline (live after T8; shows – until then) ----
+    // ---- Curb headline (live after the first valid analysis; shows – until then) ----
+    // Gate on cv.valid: the server always serializes the curb object, zero-filled
+    // until analyze() first succeeds, so without this gate a boot / camera failure
+    // reads as "0.0 m free, 0 spaces, can't fit" — indistinguishable from a full curb.
     const curb=st.curb||{};
-    const freeM=curb.free_curb_m!=null?curb.free_curb_m.toFixed(1):"–";
+    const cvOk=!!(st.cv&&st.cv.valid);
+    const warming=cvOk&&curb.warming;
+    const freeM=(cvOk&&curb.free_curb_m!=null)?curb.free_curb_m.toFixed(1):"–";
     $("#hCurbFree").textContent=freeM;
     $("#curbFreeM").textContent=freeM;
-    $("#curbFit").textContent=curb.can_fit!=null?curb.can_fit:"–";
-    $("#curbEst").textContent=curb.est_free_spaces!=null?curb.est_free_spaces:"–";
-    $("#curbRange").textContent=curb.reliable_range_m!=null?curb.reliable_range_m.toFixed(0)+"m":"–";
+    $("#curbFit").textContent=(cvOk&&curb.can_fit!=null)?(curb.can_fit?"yes":"no"):"–";
+    $("#curbEst").textContent=(cvOk&&curb.est_free_spaces!=null)?curb.est_free_spaces:"–";
+    $("#curbRange").textContent=(cvOk&&curb.reliable_range_m!=null)?curb.reliable_range_m.toFixed(0)+"m":"–";
+    // Low-confidence badge: dark scene or freshly-seeded baselines still settling.
+    const cc=$("#curbConf");
+    if(cc){ const msg=warming?"baselines warming up":(curb.dark?"low light":""); cc.textContent=msg; cc.style.display=msg?"":"none"; }
 
     // ---- Per-cell live colouring (after T8) ----
     // Only re-render when st.cells actually changes to avoid constant DOM churn
@@ -1082,6 +1131,7 @@ async function poll(){
     if(st.cv) $("#sCv").textContent=st.cv.valid?`${st.cv.decW}×${st.cv.decH} · ${st.cv.tookMs} ms`:"—";
     if(st.afStatus!=null){ const a=st.afStatus; $("#sAf").textContent=a<0?"n/a":(a===16?"focused":(a===112?"idle":"busy (0x"+a.toString(16)+")")); }
     if(st.mqttEnabled!==undefined){ const t=st.mqttEnabled?(st.mqttConnected?"connected":"connecting…"):"off"; $("#sMqtt").textContent=t; const ms=$("#mqttStat"); if(ms)ms.textContent=t; }
+    { const ws=$("#wgStat"); if(ws){ const wsv=st.wgState||(st.wgEnabled?"…":"off"); ws.textContent=wsv; ws.className="pill "+(wsv==="up"?"sta":(wsv==="off"?"":"ap")); } }
     if(st.lastSend&&st.lastSend.code) $("#lastSend").textContent=`Last send: ${st.lastSend.event} · count ${st.lastSend.count} · HTTP ${st.lastSend.code} · ${st.lastSend.agoS}s ago`;
     if(st.spoolQueued!=null){ const sp=$("#spoolStat"); if(sp) sp.textContent=st.spoolMode===0?"Spool off":`Queued: ${st.spoolQueued} · ${(st.spoolBytes/1024).toFixed(1)} KB`; }
     $("#pwBanner").classList.toggle("show",!!st.mustChangePass);
@@ -1092,7 +1142,8 @@ async function poll(){
 (async()=>{
   // Restore persisted UI preferences
   const _clEl=$("#cellLenM"); if(_clEl) _clEl.value=cellLenM;
-  await poll(); await loadCfg();
+  await poll();
+  try{ await loadCfg(); }catch(e){}   // a transient config fetch failure must not kill polling/snapshot
   refreshSnap(); pollLog(); startPolling();
 })();
 </script>
