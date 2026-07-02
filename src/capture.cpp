@@ -32,6 +32,6 @@ void captureMaybeLog(const Config& cfg, const CurbResult& r) {
   body += "]}";
 
   int code = netPostJson(cfg.captureUrl, cfg.captureAuthHeaderName, cfg.captureAuthHeaderValue,
-                         true /*tlsInsecure*/, body);
+                         cfg.captureTlsInsecure, body);
   log_i("capture POST -> HTTP %d (%u cells)", code, (unsigned)r.nCells);
 }

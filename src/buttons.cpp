@@ -3,6 +3,10 @@
 #include "esp_system.h"
 #include "logbuf.h"           // routes log_i/_w/_e into the web serial console (include last)
 
+// Confirm a pending OTA image before any voluntary restart (defined in main.cpp),
+// so entering AP mode within the OTA auto-confirm window can't roll the image back.
+extern void otaMarkValidIfPending();
+
 static const uint32_t FORCE_AP_MAGIC = 0xA9C0FFEEu;
 RTC_NOINIT_ATTR static uint32_t s_forceAp;
 
@@ -31,6 +35,7 @@ void buttonsLoop() {
       s_handled = true;
       log_w("BOOT long-press: rebooting into AP config mode");
       s_forceAp = FORCE_AP_MAGIC;
+      otaMarkValidIfPending();   // don't let entering AP mode revert a fresh OTA image
       delay(50);
       ESP.restart();
     }
@@ -41,6 +46,7 @@ void buttonsLoop() {
 
 void buttonsForceApMode() {
   s_forceAp = FORCE_AP_MAGIC;
+  otaMarkValidIfPending();   // don't let entering AP mode revert a fresh OTA image
   delay(50);
   ESP.restart();
 }

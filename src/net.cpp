@@ -17,6 +17,12 @@ static uint32_t  s_lastApRetry   = 0;       // millis() of the last/scheduled ST
 
 static const char* MP_BOUNDARY = "----ParkingCamBoundary7f3a91c4";
 
+// Feed the hang watchdog (main.cpp) around outbound POSTs. loop() feeds it once
+// per pass, but a pass can chain several bounded (<=23s) blocking POSTs against a
+// wedged receiver; feeding before each one keeps a healthy-but-slow egress from
+// tripping the 90s watchdog (the watchdog exists for the wedged WebServer spin).
+extern void noteLoopAlive();
+
 void netBegin(const Config* cfg) {
   s_cfg = cfg;
   WiFi.persistent(false);          // we manage credentials in NVS ourselves
@@ -49,7 +55,15 @@ bool netStartSTA(uint32_t timeoutMs) {
 static void apBringUp() {
   s_dns.stop();                    // clean re-bind if we're re-entering AP after a retry
   WiFi.mode(WIFI_AP);
-  const char* pass = (strlen(s_cfg->apPass) >= 8) ? s_cfg->apPass : nullptr; // open if too short
+  // Never bring up an OPEN AP: the AP password is the sole gate on the setup
+  // surface (config writes, backup). If the configured apPass is too short for
+  // WPA2 (<8 chars, a plausible user mistake), fall back to the closed default
+  // rather than removing the gate silently.
+  const char* pass = s_cfg->apPass;
+  if (strlen(pass) < 8) {
+    log_w("AP password too short (<8 chars) -> using the default WPA2 password instead of an open AP");
+    pass = DEFAULT_AP_PASS;
+  }
   WiFi.softAP(s_cfg->apSsid, pass);
   IPAddress ip = WiFi.softAPIP();
   s_dns.start(53, "*", ip);        // captive portal: resolve everything to us
@@ -201,6 +215,7 @@ int netSendEvent(const Config& cfg, const char* event,
   if (hasImage) { memcpy(body + off, jpg, jpgLen); off += jpgLen; }
   memcpy(body + off, tailStr, tailLen);            off += tailLen;
 
+  noteLoopAlive();   // full watchdog budget for this bounded POST (may be one of several this pass)
   bool https = strncmp(cfg.whUrl, "https:", 6) == 0;
   HTTPClient http;
   int code;
@@ -235,6 +250,7 @@ int netPostJson(const char* url, const char* authName, const char* authValue,
   if (!url || !url[0])               return -1000;
   if (WiFi.status() != WL_CONNECTED) return -1001;
 
+  noteLoopAlive();   // full watchdog budget for this bounded POST (may be one of several this pass)
   bool https = strncmp(url, "https:", 6) == 0;
   HTTPClient http;
   int code;

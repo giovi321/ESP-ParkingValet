@@ -9,21 +9,10 @@
 #include "buttons.h"
 #include "mqttc.h"
 #include "spool.h"
+#include "wg.h"
 #include "web_ui.h"      // index_html_gz / index_html_gz_len (generated)
 #include "logbuf.h"
-
-#ifndef PARKINGCAM_VERSION
-#define PARKINGCAM_VERSION "0.0.0"
-#endif
-
-#if defined(__has_include)
-#  if __has_include("build_info.h")
-#    include "build_info.h"
-#  endif
-#endif
-#ifndef BUILD_GIT_SHA
-#define BUILD_GIT_SHA "dev"
-#endif
+#include "version.h"     // PARKINGCAM_VERSION + BUILD_GIT_SHA
 
 extern int sendStatsNow();   // defined in main.cpp
 extern void noteLoopAlive();  // hang-watchdog heartbeat (main.cpp)
@@ -64,10 +53,15 @@ static const char* authUser() {
 }
 
 static bool requireAuth() {
-  // AP/config mode is gated by the WPA2 AP password (physical proximity), so we
-  // skip Digest there to keep first-time setup and captive portals smooth.
-  // STA mode is network-exposed, so it always requires Digest auth.
-  if (netIsAP()) return true;
+  // AP/config mode is gated by the WPA2 AP password (physical proximity). We skip
+  // Digest there ONLY during first-time setup, i.e. while the admin password is
+  // still the factory default (mustChangePass) — enforcing Digest with public
+  // default creds adds nothing and would break the captive-portal flow. Once an
+  // admin password has been set, enforce Digest even in AP mode: a field device
+  // that drops to AP fallback after a WiFi loss (netStartAP(fromFailure)) must not
+  // expose /api/backup secrets or accept config writes just because someone knows
+  // the (published) default AP password.
+  if (netIsAP() && g_cfg->mustChangePass) return true;
   if (!server.authenticate(authUser(), g_cfg->adminPass)) {
     server.requestAuthentication(DIGEST_AUTH, "ESP-ParkingValet", "Authentication required");
     return false;
@@ -110,6 +104,8 @@ static void handleState() {
   doc["afStatus"]       = cameraFocusStatus();
   doc["mqttEnabled"]    = g_cfg->mqttEnabled;
   doc["mqttConnected"]  = mqttConnected();
+  doc["wgEnabled"]      = g_cfg->wgEnabled;
+  doc["wgState"]        = wgStateStr();   // off | wait-wifi | wait-clock | connecting | up | down
   uint32_t spQ = 0, spB = 0; spoolStats(spQ, spB);
   doc["spoolMode"]      = g_cfg->spoolMode;
   doc["spoolQueued"]    = spQ;
@@ -131,6 +127,11 @@ static void handleState() {
   curb["reliable_range_m"]   = g_last->reliable_range_m;
   curb["occupied_fraction"]  = g_last->occupied_fraction;
   curb["dark"]               = g_last->dark;
+  curb["warming"]            = g_last->warming;
+  curb["pitch_m"]            = g_last->pitch_m;
+  curb["pitch_learned_m"]    = g_last->pitch_learned_m;
+  curb["pitch_samples"]      = g_last->pitch_samples;
+  curb["pitch_disagree"]     = g_last->pitch_disagree;
 
   // doc["cells"] — per-cell array (renderOverlay/renderCellTable reads st.cells[i].occupied etc.)
   JsonArray cells = doc["cells"].to<JsonArray>();
@@ -186,8 +187,8 @@ static void handleConfigPost() {
     return;
   }
 
-  bool wifiChanged = false, camChanged = false, mqttChanged = false;
-  configMergeJson(*g_cfg, doc.as<JsonObjectConst>(), &wifiChanged, &camChanged, &mqttChanged);
+  bool wifiChanged = false, camChanged = false, mqttChanged = false, wgChanged = false;
+  configMergeJson(*g_cfg, doc.as<JsonObjectConst>(), &wifiChanged, &camChanged, &mqttChanged, &wgChanged);
 
   // Clear the forced-change flag once the password differs from the default.
   if (strcmp(g_cfg->adminPass, DEFAULT_ADMIN_PASS) != 0) g_cfg->mustChangePass = false;
@@ -195,6 +196,7 @@ static void handleConfigPost() {
   bool saved = configSave(*g_cfg);
   if (camChanged)  { cameraApplySettings(*g_cfg); cameraApplyFocus(*g_cfg); }
   if (mqttChanged) mqttReconfigure();
+  if (wgChanged)   wgReconfigure();   // apply wg edits now (disable really stops the tunnel)
 
   JsonDocument resp;
   resp["ok"]     = saved;
@@ -245,8 +247,8 @@ static void handleRestore() {
     server.send(400, "application/json", "{\"ok\":false,\"err\":\"bad json\"}");
     return;
   }
-  bool w = false, c = false, m = false;
-  configMergeJson(*g_cfg, doc.as<JsonObjectConst>(), &w, &c, &m);
+  bool w = false, c = false, m = false, wg = false;
+  configMergeJson(*g_cfg, doc.as<JsonObjectConst>(), &w, &c, &m, &wg);
   bool saved = configSave(*g_cfg);
   server.send(saved ? 200 : 500, "application/json",
               saved ? "{\"ok\":true,\"reboot\":true}" : "{\"ok\":false}");
@@ -270,6 +272,7 @@ static void handleAction() {
   } else if (!strcmp(action, "ap_mode")) {
     server.send(200, "application/json", "{\"ok\":true}");
     delay(300);
+    otaMarkValidIfPending();   // a voluntary reboot must not revert a freshly-OTA'd image
     buttonsForceApMode();   // sets RTC flag + restarts
   } else if (!strcmp(action, "test_webhook")) {
     camera_fb_t* fb = esp_camera_fb_get();
