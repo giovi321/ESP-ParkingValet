@@ -19,15 +19,7 @@
 #include "logbuf.h"
 #include "wg.h"
 #include "capture.h"
-
-#if defined(__has_include)
-#  if __has_include("build_info.h")
-#    include "build_info.h"
-#  endif
-#endif
-#ifndef BUILD_GIT_SHA
-#define BUILD_GIT_SHA "dev"
-#endif
+#include "version.h"   // PARKINGCAM_VERSION + BUILD_GIT_SHA (folds in generated build_info.h)
 
 static Config     cfg;
 static CvEngine   cvEngine;
@@ -77,6 +69,11 @@ static uint32_t    s_cvLastCheckMs = 0;
 
 static bool cvStateDiffers(const CurbPersist& a, const CurbPersist& b) {
   if (a.geomSig != b.geomSig || a.cellCount != b.cellCount) return true;
+  // Auto-learn progress: persist it too, else learnSamples/carPitchLearned only
+  // reach NVS when a baseline happens to drift, and a reboot rolls them back —
+  // possibly below the K>=30 gate, flipping est_free_spaces back to the default.
+  if (a.learnSamples != b.learnSamples) return true;
+  { float dp = a.carPitchLearned - b.carPitchLearned; if (dp < 0) dp = -dp; if (dp > 0.05f) return true; }
   for (int i = 0; i < MAX_CELLS; i++) {
     if (a.committed[i] != b.committed[i] || a.baselineInit[i] != b.baselineInit[i]) return true;
     float d = a.baselineEdge[i] - b.baselineEdge[i]; if (d < 0) d = -d;
