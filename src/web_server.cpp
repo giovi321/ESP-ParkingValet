@@ -132,6 +132,15 @@ static void handleState() {
   curb["pitch_learned_m"]    = g_last->pitch_learned_m;
   curb["pitch_samples"]      = g_last->pitch_samples;
   curb["pitch_disagree"]     = g_last->pitch_disagree;
+  // Per-strip breakdown (diagnostic).
+  JsonArray strips = curb["strips"].to<JsonArray>();
+  for (int si = 0; si < g_last->nStrips && si < MAX_STRIPS; si++) {
+    JsonObject s = strips.add<JsonObject>();
+    s["name"]            = (si < g_cfg->stripCount) ? g_cfg->strips[si].name : "";
+    s["free_curb_m"]     = g_last->strips[si].free_curb_m;
+    s["est_free_spaces"] = g_last->strips[si].est_free_spaces;
+    s["reliable_range_m"]= g_last->strips[si].reliable_range_m;
+  }
 
   // doc["cells"] — per-cell array (renderOverlay/renderCellTable reads st.cells[i].occupied etc.)
   JsonArray cells = doc["cells"].to<JsonArray>();

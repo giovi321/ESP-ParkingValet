@@ -25,11 +25,22 @@ struct CellResult {
   bool  inRange;        // false => excluded far/out-of-range cell
 };
 
+// Per-strip headline breakdown (diagnostic; est_free_spaces here is the raw
+// per-strip estimate, not run through the aggregate stability hold).
+struct StripHeadline {
+  float free_curb_m;
+  float longest_free_run_m;
+  int   est_free_spaces;
+  float reliable_range_m;
+};
+
 struct CurbResult {
   bool     valid;
   int      decW, decH; uint32_t tookMs;
   int      nCells;
   CellResult cells[MAX_CELLS];
+  int         nStrips;
+  StripHeadline strips[MAX_STRIPS];
   // headline (aggregated across strips, in-range only):
   float    free_curb_m;
   float    longest_free_run_m;

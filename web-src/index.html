@@ -133,6 +133,7 @@
         <div class="bigcount"><div class="n" id="curbRange">–</div><div class="l">m range</div></div>
       </div>
       <div id="curbConf" class="hint" style="display:none;color:var(--warn,#e0a800)"></div>
+      <div id="curbStrips" class="hint" style="display:none"></div>
     </div>
 
     <!-- Strip tracer card -->
@@ -1116,6 +1117,11 @@ async function poll(){
     // Low-confidence badge: dark scene or freshly-seeded baselines still settling.
     const cc=$("#curbConf");
     if(cc){ const msg=warming?"baselines warming up":(curb.dark?"low light":""); cc.textContent=msg; cc.style.display=msg?"":"none"; }
+    // Per-strip breakdown (only shown when more than one strip is defined)
+    const csEl=$("#curbStrips");
+    if(csEl){ const ss=(cvOk&&Array.isArray(curb.strips))?curb.strips:[];
+      if(ss.length>1){ csEl.textContent=ss.map(s=>(s.name||"strip")+": "+(s.free_curb_m||0).toFixed(1)+" m free · ~"+(s.est_free_spaces||0)+" spaces").join("  ·  "); csEl.style.display=""; }
+      else csEl.style.display="none"; }
 
     // ---- Per-cell live colouring (after T8) ----
     // Only re-render when st.cells actually changes to avoid constant DOM churn

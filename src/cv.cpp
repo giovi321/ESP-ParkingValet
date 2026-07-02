@@ -317,6 +317,7 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   uint32_t t0 = millis();
   out.valid = false;
   out.nCells = 0;
+  out.nStrips = 0;
   out.est_free_spaces    = 0;
   out.free_curb_m        = 0.0f;
   out.longest_free_run_m = 0.0f;
@@ -446,6 +447,15 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   out.can_fit            = (ag.longest_free_run_m >= (pitch - _cfg->clearInteriorM));
   out.occupied_fraction  = (ag.enabled_len > 0.0f) ? (ag.occupied_len / ag.enabled_len) : 0.0f;
   out.est_free_spaces    = reported;
+
+  // Per-strip breakdown (diagnostic; raw per-strip spaces, no separate hold).
+  out.nStrips = nStrips;
+  for (int si = 0; si < nStrips && si < MAX_STRIPS; si++) {
+    out.strips[si].free_curb_m        = ag.strip[si].free_curb_m;
+    out.strips[si].longest_free_run_m = ag.strip[si].longest_free_run_m;
+    out.strips[si].est_free_spaces    = ag.strip[si].raw_spaces;
+    out.strips[si].reliable_range_m   = ag.strip[si].reliable_range_m;
+  }
 
   out.tookMs = millis() - t0;
   out.valid  = true;

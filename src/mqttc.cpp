@@ -131,6 +131,45 @@ static void clearCfg(const char* component, const String& obj) {
 
 // Publish HA discovery for the camera and control buttons.
 // Per-strip occupancy binary_sensors and selects have been removed (Task C3.5).
+// Publish per-strip headline sensors (free curb + free spaces) for the strips that
+// exist, and clear discovery for strip slots that no longer do, so removing a strip
+// drops its HA entities. Refreshed on connect and on any geometry/name change.
+static void publishStripDiscovery() {
+  if (!s_cfg->mqttDiscovery) return;
+  const String base = baseTopic();
+  const String avty = availTopic();
+  for (int si = 0; si < MAX_STRIPS; si++) {
+    const String sFree = String("strip") + si + "_free_curb_m";
+    const String sEst  = String("strip") + si + "_est_free_spaces";
+    if (si >= s_cfg->stripCount) { clearCfg("sensor", sFree); clearCfg("sensor", sEst); continue; }
+    const char* nm = s_cfg->strips[si].name[0] ? s_cfg->strips[si].name : "Strip";
+    {
+      JsonDocument d;
+      d["name"]     = String(nm) + " free curb";
+      d["uniq_id"]  = String(NODE) + "_" + sFree;
+      d["stat_t"]   = base + "/strip" + si + "/free_curb_m";
+      d["avty_t"]   = avty;
+      d["dev_cla"]  = "distance";
+      d["unit_of_meas"] = "m";
+      d["stat_cla"] = "measurement";
+      d["ic"]       = "mdi:road-variant";
+      addDevice(d.as<JsonObject>());
+      publishCfg("sensor", sFree, d);
+    }
+    {
+      JsonDocument d;
+      d["name"]     = String(nm) + " free spaces";
+      d["uniq_id"]  = String(NODE) + "_" + sEst;
+      d["stat_t"]   = base + "/strip" + si + "/est_free_spaces";
+      d["avty_t"]   = avty;
+      d["stat_cla"] = "measurement";
+      d["ic"]       = "mdi:car";
+      addDevice(d.as<JsonObject>());
+      publishCfg("sensor", sEst, d);
+    }
+  }
+}
+
 static void publishCameraAndButtonDiscovery() {
   if (!s_cfg->mqttDiscovery) return;
   const String base = baseTopic();
@@ -264,6 +303,7 @@ static void publishDiscovery() {
     publishCfg("binary_sensor", "warming", d);
   }
 
+  publishStripDiscovery();
   publishCameraAndButtonDiscovery();
 }
 
@@ -281,6 +321,13 @@ static void publishState() {
     s_mqtt.publish((base + "/dark").c_str(),           s_last->dark           ? "ON" : "OFF", true);
     s_mqtt.publish((base + "/pitch_disagree").c_str(), s_last->pitch_disagree ? "ON" : "OFF", true);
     s_mqtt.publish((base + "/warming").c_str(),        s_last->warming        ? "ON" : "OFF", true);
+    // Per-strip breakdown.
+    for (int si = 0; si < s_last->nStrips && si < MAX_STRIPS; si++) {
+      s_mqtt.publish((base + "/strip" + si + "/free_curb_m").c_str(),
+                     String(s_last->strips[si].free_curb_m, 1).c_str(), true);
+      s_mqtt.publish((base + "/strip" + si + "/est_free_spaces").c_str(),
+                     String(s_last->strips[si].est_free_spaces).c_str(), true);
+    }
   }
 }
 
@@ -396,7 +443,7 @@ void mqttLoop() {
 
   // Refresh camera/button HA entities when strip/cell geometry changes.
   uint32_t sig = roiSig();
-  if (sig != s_roiSig) { s_roiSig = sig; publishCameraAndButtonDiscovery(); }
+  if (sig != s_roiSig) { s_roiSig = sig; publishStripDiscovery(); publishCameraAndButtonDiscovery(); }
 
   if (s_photoReq && now - s_lastPhotoMs > PHOTO_MIN_MS) {
     s_photoReq = false; s_lastPhotoMs = now;
