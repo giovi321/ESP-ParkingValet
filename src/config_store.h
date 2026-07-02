@@ -17,7 +17,10 @@
 static const int   MAX_STRIPS      = 4;    // max traced curb strips
 static const int   MAX_CELLS       = 48;   // total cells across all strips
 static const char* CFG_NAMESPACE   = "parkingcam";
-static const char* CFG_KEY         = "cfg";
+static const char* CFG_KEY         = "cfg";    // settings blob (no strips/cells)
+static const char* CFG_GEOM_KEY    = "geom";   // strips + cells blob (kept separate so the
+                                               // frequently-saved settings blob can't be blocked
+                                               // by geometry outgrowing the NVS partition)
 static const int   CONFIG_VERSION  = 2;    // bumped: Roi/rois -> CurbStrip/CurbCell
 
 // Default credentials on a fresh device (forces a change on first login).
@@ -150,6 +153,7 @@ struct Config {
   char    captureUrl[200];
   char    captureAuthHeaderName[48];
   char    captureAuthHeaderValue[200];   // SECRET
+  bool    captureTlsInsecure;            // skip cert validation for https capture endpoint
 
   // --- Image / sensor ---
   int  framesize;            // framesize_t value (default SVGA = 9)
@@ -199,6 +203,7 @@ void configToJson(const Config& cfg, JsonObject out, bool includeSecrets);
 // Merge a partial JSON object into cfg (only keys present are updated).
 // Secret fields are only updated when the incoming value is a non-empty string,
 // so a UI round-trip with masked secrets preserves the stored values.
-// Returns true if any field changed. Sets *wifiChanged/*camChanged if those
-// subsystems need to react.
-bool configMergeJson(Config& cfg, JsonObjectConst in, bool* wifiChanged, bool* camChanged, bool* mqttChanged);
+// Returns true if any field changed. Sets *wifiChanged/*camChanged/*mqttChanged/
+// *wgChanged if those subsystems need to react (any out-param may be nullptr).
+bool configMergeJson(Config& cfg, JsonObjectConst in, bool* wifiChanged, bool* camChanged,
+                     bool* mqttChanged, bool* wgChanged);

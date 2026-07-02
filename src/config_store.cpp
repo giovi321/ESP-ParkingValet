@@ -92,6 +92,7 @@ void configLoadDefaults(Config& c) {
   setStr(c.captureUrl, sizeof(c.captureUrl), "");
   setStr(c.captureAuthHeaderName, sizeof(c.captureAuthHeaderName), "");
   setStr(c.captureAuthHeaderValue, sizeof(c.captureAuthHeaderValue), "");
+  c.captureTlsInsecure = true;
 
   c.framesize   = 9;     // FRAMESIZE_SVGA (800x600)
   c.jpegQuality = 12;
@@ -119,8 +120,12 @@ void configLoadDefaults(Config& c) {
 }
 
 // ---- full (de)serialization (always includes secrets) ---------------------
+// serializeSettings emits everything EXCEPT the strips/cells arrays; serializeGeom
+// emits only those. They are persisted under separate NVS keys so a large geometry
+// can't push the frequently-saved settings blob over the partition limit, but the
+// API/backup path (serializeFull / configToJson) still emits one combined object.
 
-static void serializeFull(const Config& c, JsonObject o) {
+static void serializeSettings(const Config& c, JsonObject o) {
   o["version"] = c.version;
 
   o["staSsid"]  = c.staSsid;
@@ -193,6 +198,7 @@ static void serializeFull(const Config& c, JsonObject o) {
   o["captureUrl"]            = c.captureUrl;
   o["captureAuthHeaderName"] = c.captureAuthHeaderName;
   o["captureAuthHeaderValue"]= c.captureAuthHeaderValue;
+  o["captureTlsInsecure"]    = c.captureTlsInsecure;
 
   o["framesize"]   = c.framesize;
   o["jpegQuality"] = c.jpegQuality;
@@ -213,7 +219,9 @@ static void serializeFull(const Config& c, JsonObject o) {
   o["smoothMode"]     = c.smoothMode;
   o["darkLumaThresh"] = c.darkLumaThresh;
   o["pitchLearn"]     = c.pitchLearn;
+}
 
+static void serializeGeom(const Config& c, JsonObject o) {
   // Curb strips array
   {
     JsonArray arr = o["strips"].to<JsonArray>();
@@ -242,12 +250,22 @@ static void serializeFull(const Config& c, JsonObject o) {
   }
 }
 
+static void serializeFull(const Config& c, JsonObject o) {
+  serializeSettings(c, o);
+  serializeGeom(c, o);
+}
+
 static void parseFull(Config& c, JsonObjectConst o) {
   // c is pre-seeded with defaults; only overwrite present keys.
   if (o["staSsid"].is<const char*>())  setStr(c.staSsid,  sizeof(c.staSsid),  o["staSsid"]);
   if (o["staPass"].is<const char*>())  setStr(c.staPass,  sizeof(c.staPass),  o["staPass"]);
   if (o["apSsid"].is<const char*>())   setStr(c.apSsid,   sizeof(c.apSsid),   o["apSsid"]);
-  if (o["apPass"].is<const char*>())   setStr(c.apPass,   sizeof(c.apPass),   o["apPass"]);
+  // AP password gates the whole setup surface: accept only empty (keep current) or
+  // a valid WPA2 length (>=8). A too-short value is ignored so the AP is never open.
+  if (o["apPass"].is<const char*>()) {
+    const char* v = o["apPass"]; size_t vl = strlen(v);
+    if (vl == 0 || vl >= 8) setStr(c.apPass, sizeof(c.apPass), v);
+  }
   if (o["hostname"].is<const char*>()) setStr(c.hostname, sizeof(c.hostname), o["hostname"]);
   c.offlineRebootMin = o["offlineRebootMin"] | c.offlineRebootMin;
   c.apRetryMin       = o["apRetryMin"]       | c.apRetryMin;
@@ -308,12 +326,15 @@ static void parseFull(Config& c, JsonObjectConst o) {
   c.relDelta          = o["relDelta"]          | c.relDelta;
   c.hysteresis        = o["hysteresis"]        | c.hysteresis;
   c.baselineEma       = o["baselineEma"]       | c.baselineEma;
+  c.hysteresis        = constrain(c.hysteresis,  0.0f, 0.9f);
+  c.baselineEma       = constrain(c.baselineEma, 0.0f, 1.0f);   // |1-a|<=1 so the EMA can't diverge
 
   c.occupancyEngine = o["occupancyEngine"] | c.occupancyEngine;
   c.trainCapture    = o["trainCapture"]    | c.trainCapture;
   if (o["captureUrl"].is<const char*>())             setStr(c.captureUrl,             sizeof(c.captureUrl),             o["captureUrl"]);
   if (o["captureAuthHeaderName"].is<const char*>())  setStr(c.captureAuthHeaderName,  sizeof(c.captureAuthHeaderName),  o["captureAuthHeaderName"]);
   if (o["captureAuthHeaderValue"].is<const char*>()) setStr(c.captureAuthHeaderValue, sizeof(c.captureAuthHeaderValue), o["captureAuthHeaderValue"]);
+  c.captureTlsInsecure = o["captureTlsInsecure"] | c.captureTlsInsecure;
 
   c.framesize   = o["framesize"]   | c.framesize;
   c.jpegQuality = o["jpegQuality"] | c.jpegQuality;
@@ -327,13 +348,24 @@ static void parseFull(Config& c, JsonObjectConst o) {
   c.afMode      = o["afMode"]      | c.afMode;
   c.tzOffsetMin = o["tzOffsetMin"] | c.tzOffsetMin;
 
-  // Curb tunables (merge with o[k] | c.k pattern)
+  // Curb tunables (merge, then clamp to sane ranges so hostile/buggy input can't
+  // corrupt the headline numbers or diverge the baseline EMA).
   c.carPitchM      = o["carPitchM"]      | c.carPitchM;
   c.clearInteriorM = o["clearInteriorM"] | c.clearInteriorM;
   c.clearEndM      = o["clearEndM"]      | c.clearEndM;
-  c.smoothMode     = o["smoothMode"]     | c.smoothMode;
   c.darkLumaThresh = o["darkLumaThresh"] | c.darkLumaThresh;
-  c.pitchLearn     = o["pitchLearn"]     | c.pitchLearn;
+  c.carPitchM      = constrain(c.carPitchM,      0.5f, 30.0f);
+  c.clearInteriorM = constrain(c.clearInteriorM, 0.0f, 10.0f);
+  c.clearEndM      = constrain(c.clearEndM,      0.0f, 10.0f);
+  c.darkLumaThresh = constrain(c.darkLumaThresh, 0.0f, 255.0f);
+  // smoothMode enum: only 0 (none) and 1 (width-3 median) exist in the firmware.
+  c.smoothMode = o["smoothMode"] | c.smoothMode;
+  if (c.smoothMode > 1) c.smoothMode = 1;
+  // pitchLearn is a uint8 flag; the web UI sends a JSON boolean for its checkbox,
+  // and `bool | uint8_t` would silently drop it — accept both forms.
+  if (o["pitchLearn"].is<bool>())     c.pitchLearn = o["pitchLearn"].as<bool>() ? 1 : 0;
+  else                                c.pitchLearn = o["pitchLearn"] | c.pitchLearn;
+  c.pitchLearn = c.pitchLearn ? 1 : 0;
 
   // Curb strips: pre-seed empty; overwrite only when present, so an old backup
   // without "strips" yields zero strips (user re-traces in the web UI).
@@ -357,17 +389,25 @@ static void parseFull(Config& c, JsonObjectConst o) {
     memset(c.cells, 0, sizeof(c.cells));
     for (JsonObjectConst cell : o["cells"].as<JsonArrayConst>()) {
       if (n >= MAX_CELLS) break;
+      // Clamp normalized vertices to [0,1]: a wild coordinate would make the overlay
+      // Bresenham loop iterate for minutes (tripping the hang watchdog) and skew the
+      // per-cell bounding box; cv.cpp additionally clamps at use, this is at rest.
       if (cell["px"].is<JsonArrayConst>()) {
         JsonArrayConst px = cell["px"].as<JsonArrayConst>();
-        for (int j = 0; j < 4; j++) c.cells[n].px[j] = px[j] | 0.0f;
+        for (int j = 0; j < 4; j++) c.cells[n].px[j] = constrain((float)(px[j] | 0.0f), 0.0f, 1.0f);
       }
       if (cell["py"].is<JsonArrayConst>()) {
         JsonArrayConst py = cell["py"].as<JsonArrayConst>();
-        for (int j = 0; j < 4; j++) c.cells[n].py[j] = py[j] | 0.0f;
+        for (int j = 0; j < 4; j++) c.cells[n].py[j] = constrain((float)(py[j] | 0.0f), 0.0f, 1.0f);
       }
-      c.cells[n].lenM    = cell["lenM"]    | 0.0f;
-      c.cells[n].strip   = (uint8_t)(cell["strip"]   | (int)0);
+      c.cells[n].lenM    = constrain((float)(cell["lenM"] | 0.0f), 0.0f, 30.0f);  // negative would corrupt free_curb_m
+      int si             = cell["strip"] | (int)0;
       c.cells[n].enabled = cell["enabled"] | true;
+      // Orphan cell (strip index past the parsed strip count) is excluded from the
+      // per-strip free-gap scan; disable it so it also drops out of reliable_range_m
+      // and occupied_fraction rather than silently under-reporting free curb.
+      if (si < 0 || si >= c.stripCount) { si = 0; c.cells[n].enabled = false; }
+      c.cells[n].strip   = (uint8_t)si;
       n++;
     }
     c.cellCount = n;
@@ -376,38 +416,52 @@ static void parseFull(Config& c, JsonObjectConst o) {
 
 // ---- NVS load / save ------------------------------------------------------
 
+// Read one NVS blob and merge it into cfg via parseFull. Missing/oversize/corrupt
+// blobs are skipped (cfg keeps its current values). Returns true if a blob was
+// applied. Legacy single-blob configs (strips/cells embedded in CFG_KEY) still load
+// because parseFull picks up whatever keys are present.
+static bool loadBlobInto(Preferences& p, const char* key, Config& cfg) {
+  size_t len = p.getBytesLength(key);
+  if (len == 0 || len > 16384) return false;
+  std::unique_ptr<char[]> buf(new char[len + 1]);
+  size_t got = p.getBytes(key, buf.get(), len);
+  if (got != len) return false;
+  buf[len] = 0;
+  JsonDocument doc;
+  if (deserializeJson(doc, buf.get()) != DeserializationError::Ok) return false;
+  parseFull(cfg, doc.as<JsonObjectConst>());
+  return true;
+}
+
 bool configLoad(Config& cfg) {
   configLoadDefaults(cfg);
 
   Preferences p;
   if (!p.begin(CFG_NAMESPACE, /*readOnly=*/true)) return false;
-  size_t len = p.getBytesLength(CFG_KEY);
-  if (len == 0 || len > 16384) { p.end(); return false; }
-
-  std::unique_ptr<char[]> buf(new char[len + 1]);
-  size_t got = p.getBytes(CFG_KEY, buf.get(), len);
+  bool anySettings = loadBlobInto(p, CFG_KEY, cfg);       // settings (+ legacy embedded geometry)
+  loadBlobInto(p, CFG_GEOM_KEY, cfg);                     // geometry (authoritative when present)
   p.end();
-  if (got != len) return false;
-  buf[len] = 0;
-
-  JsonDocument doc;
-  if (deserializeJson(doc, buf.get()) != DeserializationError::Ok) return false;
-  parseFull(cfg, doc.as<JsonObjectConst>());
   cfg.version = CONFIG_VERSION;
-  return true;
+  return anySettings;
 }
 
 bool configSave(const Config& cfg) {
-  JsonDocument doc;
-  serializeFull(cfg, doc.to<JsonObject>());
-  String out;
-  serializeJson(doc, out);
+  // Serialize settings and geometry into separate blobs so a large geometry never
+  // pushes the frequently-saved settings blob over the NVS partition budget (a
+  // single combined blob near MAX_CELLS could exceed it, since nvs_set_blob keeps
+  // both the old and new copies during the atomic swap).
+  JsonDocument sdoc; serializeSettings(cfg, sdoc.to<JsonObject>());
+  JsonDocument gdoc; serializeGeom(cfg,     gdoc.to<JsonObject>());
+  String sout; serializeJson(sdoc, sout);
+  String gout; serializeJson(gdoc, gout);
+  if (sout.isEmpty() || gout.isEmpty()) return false;   // serialization/alloc failure -> don't report success
 
   Preferences p;
   if (!p.begin(CFG_NAMESPACE, /*readOnly=*/false)) return false;
-  size_t n = p.putBytes(CFG_KEY, out.c_str(), out.length());
+  size_t n1 = p.putBytes(CFG_KEY,      sout.c_str(), sout.length());
+  size_t n2 = p.putBytes(CFG_GEOM_KEY, gout.c_str(), gout.length());
   p.end();
-  return n == out.length();
+  return n1 == sout.length() && n2 == gout.length();
 }
 
 void configFactoryReset() {
@@ -435,7 +489,8 @@ void configToJson(const Config& cfg, JsonObject out, bool includeSecrets) {
   }
 }
 
-bool configMergeJson(Config& cfg, JsonObjectConst in, bool* wifiChanged, bool* camChanged, bool* mqttChanged) {
+bool configMergeJson(Config& cfg, JsonObjectConst in, bool* wifiChanged, bool* camChanged,
+                     bool* mqttChanged, bool* wgChanged) {
   // Snapshot the bytes we care about for change detection.
   char prevSta[33], prevStaP[65], prevHost[33];
   setStr(prevSta, sizeof(prevSta), cfg.staSsid);
@@ -452,6 +507,11 @@ bool configMergeJson(Config& cfg, JsonObjectConst in, bool* wifiChanged, bool* c
   setStr(pMqDP, sizeof(pMqDP), cfg.mqttDiscoveryPrefix);
   bool pMqEn = cfg.mqttEnabled, pMqTls = cfg.mqttTls, pMqTi = cfg.mqttTlsInsecure, pMqDisc = cfg.mqttDiscovery;
   int pMqPort = cfg.mqttPort, pMqIv = cfg.mqttIntervalS;
+  bool pWgEn = cfg.wgEnabled; int pWgPort = cfg.wgEndpointPort, pWgKa = cfg.wgKeepalive;
+  char pWgPk[48], pWgAddr[24], pWgPub[48], pWgHost[64], pWgAip[24], pWgPsk[48];
+  setStr(pWgPk, sizeof(pWgPk), cfg.wgPrivateKey);   setStr(pWgAddr, sizeof(pWgAddr), cfg.wgAddress);
+  setStr(pWgPub, sizeof(pWgPub), cfg.wgPeerPublicKey); setStr(pWgHost, sizeof(pWgHost), cfg.wgEndpointHost);
+  setStr(pWgAip, sizeof(pWgAip), cfg.wgAllowedIps);  setStr(pWgPsk, sizeof(pWgPsk), cfg.wgPresharedKey);
 
   // parseFull only overwrites present keys; but it would also overwrite secrets
   // with empty strings. For secrets we only apply a non-empty value (masked
@@ -486,6 +546,12 @@ bool configMergeJson(Config& cfg, JsonObjectConst in, bool* wifiChanged, bool* c
                    strcmp(pMqU, cfg.mqttUser) || strcmp(pMqP, cfg.mqttPass) ||
                    strcmp(pMqB, cfg.mqttBaseTopic) || pMqDisc != cfg.mqttDiscovery ||
                    strcmp(pMqDP, cfg.mqttDiscoveryPrefix) || pMqIv != cfg.mqttIntervalS;
+  }
+  if (wgChanged) {
+    *wgChanged = pWgEn != cfg.wgEnabled || pWgPort != cfg.wgEndpointPort || pWgKa != cfg.wgKeepalive ||
+                 strcmp(pWgPk, cfg.wgPrivateKey) || strcmp(pWgAddr, cfg.wgAddress) ||
+                 strcmp(pWgPub, cfg.wgPeerPublicKey) || strcmp(pWgHost, cfg.wgEndpointHost) ||
+                 strcmp(pWgAip, cfg.wgAllowedIps) || strcmp(pWgPsk, cfg.wgPresharedKey);
   }
   return true;
 }
