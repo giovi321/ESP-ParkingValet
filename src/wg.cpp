@@ -31,9 +31,23 @@ static bool      s_connected = false;
 static bool      s_up = false;
 static uint32_t  s_connectedAt = 0;
 static uint32_t  s_lastPoll = 0;
+static uint32_t  s_lastConnectTry = 0;   // backoff for connect attempts (avoid per-loop DNS/log flood)
 static const uint32_t WG_UP_TIMEOUT_MS = 60000;  // reboot if peer never comes up
+static const uint32_t WG_CONNECT_RETRY_MS = 5000;
 
 void wgBegin(const Config* cfg) { s_cfg = cfg; }
+
+void wgReconfigure() {
+  if (s_inited) esp_wireguard_disconnect(&s_ctx);   // drop netif/peer/keepalive so a disable really stops it
+  s_inited        = false;
+  s_connected     = false;
+  s_up            = false;
+  s_downCnt       = 0;
+  s_connectedAt   = 0;
+  s_lastConnectTry = 0;                              // reconnect promptly with the new settings
+  s_ctx = wireguard_ctx_t{0};
+  log_i("wg: reconfigured (tunnel torn down; re-arm from new config)");
+}
 
 static bool wgConfigComplete() {
   return s_cfg && s_cfg->wgEnabled &&
@@ -58,6 +72,12 @@ void wgLoop(uint32_t now) {
   if (!clockSynced()) return;                    // NTP gate (TAI64N)
 
   if (!s_connected) {
+    // Backoff: esp_wireguard_connect() keeps failing while its async DNS lookup is
+    // pending or the endpoint is unresolvable; retrying every loop pass hammers DNS
+    // and overwrites the web log ring within a second. Attempt at most every 5s.
+    if (s_lastConnectTry && (now - s_lastConnectTry) < WG_CONNECT_RETRY_MS) return;
+    s_lastConnectTry = now;
+
     int abits = wgSplitCidr(s_cfg->wgAddress, s_addr, sizeof(s_addr));   // strip CIDR; bare IP for lwIP
     wgCidrToMask(abits, s_mask, sizeof(s_mask));                         // netmask from the address prefix
     s_wg.private_key          = s_cfg->wgPrivateKey;
@@ -73,7 +93,7 @@ void wgLoop(uint32_t now) {
       if (esp_wireguard_init(&s_wg, &s_ctx) != ESP_OK) { log_e("wg init failed"); return; }
       s_inited = true;
     }
-    if (esp_wireguard_connect(&s_ctx) != ESP_OK) { log_e("wg connect failed"); return; }
+    if (esp_wireguard_connect(&s_ctx) != ESP_OK) { log_w("wg connect pending/failed (DNS or endpoint); retry in %us", (unsigned)(WG_CONNECT_RETRY_MS / 1000)); return; }
 
     // Install the AllowedIPs route so homelab return traffic (incl. replies to whoever
     // opens the web UI) flows back through the tunnel. Without this the handshake is up
