@@ -261,8 +261,9 @@ void CvEngine::analyzeCell(int i, const DecideParams& dp, CellResult& cellRes) {
   if (dp.relative && cell.enabled && !_baselineInit[i]) { _baselineEdge[i] = edge; _baselineInit[i] = true; _warmupLeft = CV_WARMUP_FRAMES; }
 
   featuresFinalize(fa, _baselineEdge[i], cellRes.feat);
-  cellRes.clfScore = -1.0f;
-  cellRes.inRange  = cell.enabled;
+  cellRes.clfScore    = -1.0f;
+  cellRes.clfDisagree = false;
+  cellRes.inRange     = cell.enabled;
 
   if (!cell.enabled) {
     // Keep geometry but do not count; report instantaneous values only.
@@ -275,6 +276,16 @@ void CvEngine::analyzeCell(int i, const DecideParams& dp, CellResult& cellRes) {
 
   // Classifier score whenever a model is embedded (cheap: a few ops).
   cellRes.clfScore = clfAvailable() ? clfScore(cellRes.feat) : -1.0f;
+
+  // Hard-case flag: an independent edge vote that disagrees with the classifier.
+  // Used to bias training capture toward the cases where the two engines differ.
+  {
+    float metricE = dp.relative ? (edge - _baselineEdge[i]) : edge;
+    float enterE  = (dp.relative ? dp.relDelta : dp.globalThr) * (1.0f + dp.hys);
+    bool  edgeVote = metricE > enterE;
+    bool  clfVote  = (cellRes.clfScore >= 0.5f);
+    cellRes.clfDisagree = (cellRes.clfScore >= 0.0f) && (edgeVote != clfVote);
+  }
 
   // Effective threshold (no per-cell override in curb model; global only).
   float thr = dp.relative ? dp.relDelta : dp.globalThr;

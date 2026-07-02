@@ -23,6 +23,7 @@ struct CellResult {
   bool  occupied;       // committed (post-debounce, post-smooth)
   bool  rawOccupied;    // pre-debounce instantaneous decision
   bool  inRange;        // false => excluded far/out-of-range cell
+  bool  clfDisagree;    // model present AND classifier vote != edge vote (hard case)
 };
 
 // Per-strip headline breakdown (diagnostic; est_free_spaces here is the raw

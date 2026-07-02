@@ -32,6 +32,12 @@ the frames it got wrong (the weather-hard ones), add a `"y"` field (0 = empty, 1
 to that cell with the true label. The trainer uses `y` when present, else `label`. You only fix
 the mistakes, not label from scratch.
 
+Once a model is embedded, the device biases capture toward the frames worth labelling. When the
+embedded classifier and the edge engine disagree on a cell, that batch is marked `"hard":1` and
+the disagreeing cells carry `"d":1`, and capture runs at a faster cadence. Prioritise adding `y`
+overrides to the `d:1` cells: they are exactly the hard cases the trainer's hand-verified report
+measures against.
+
 ## 5. Train
 
 ```
