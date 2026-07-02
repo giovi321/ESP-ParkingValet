@@ -128,6 +128,7 @@ static void handleState() {
   curb["occupied_fraction"]  = g_last->occupied_fraction;
   curb["dark"]               = g_last->dark;
   curb["warming"]            = g_last->warming;
+  curb["camera_moved"]       = g_last->camera_moved;
   curb["pitch_m"]            = g_last->pitch_m;
   curb["pitch_learned_m"]    = g_last->pitch_learned_m;
   curb["pitch_samples"]      = g_last->pitch_samples;

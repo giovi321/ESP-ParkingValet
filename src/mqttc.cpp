@@ -302,6 +302,20 @@ static void publishDiscovery() {
     addDevice(d.as<JsonObject>());
     publishCfg("binary_sensor", "warming", d);
   }
+  {
+    JsonDocument d;
+    d["name"]     = "Camera moved";
+    d["uniq_id"]  = String(NODE) + "_camera_moved";
+    d["stat_t"]   = base + "/camera_moved";
+    d["avty_t"]   = avty;
+    d["ent_cat"]  = "diagnostic";
+    d["dev_cla"]  = "problem";
+    d["pl_on"]    = "ON";
+    d["pl_off"]   = "OFF";
+    d["ic"]       = "mdi:cctv";
+    addDevice(d.as<JsonObject>());
+    publishCfg("binary_sensor", "camera_moved", d);
+  }
 
   publishStripDiscovery();
   publishCameraAndButtonDiscovery();
@@ -321,6 +335,7 @@ static void publishState() {
     s_mqtt.publish((base + "/dark").c_str(),           s_last->dark           ? "ON" : "OFF", true);
     s_mqtt.publish((base + "/pitch_disagree").c_str(), s_last->pitch_disagree ? "ON" : "OFF", true);
     s_mqtt.publish((base + "/warming").c_str(),        s_last->warming        ? "ON" : "OFF", true);
+    s_mqtt.publish((base + "/camera_moved").c_str(),   s_last->camera_moved   ? "ON" : "OFF", true);
     // Per-strip breakdown.
     for (int si = 0; si < s_last->nStrips && si < MAX_STRIPS; si++) {
       s_mqtt.publish((base + "/strip" + si + "/free_curb_m").c_str(),

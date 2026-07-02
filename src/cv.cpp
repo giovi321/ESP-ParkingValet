@@ -16,6 +16,11 @@ static const float    DEFAULT_CAR_PITCH_M  = 6.0f;   // fallback when carPitchM 
 static_assert(curb_reduce::RD_MAX_CELLS  == MAX_CELLS,  "curb_reduce cell cap must match config_store");
 static_assert(curb_reduce::RD_MAX_STRIPS == MAX_STRIPS, "curb_reduce strip cap must match config_store");
 
+// Camera-moved detector tuning.
+static const float   CAM_MOVE_DELTA  = 0.5f;    // occupied-fraction jump vs the slow reference
+static const uint8_t CAM_MOVE_FRAMES = 8;       // sustained frames before flagging
+static const float   CAM_REF_ALPHA   = 0.01f;   // slow reference drift while the scene is stable
+
 void CvEngine::begin(const Config* cfg) {
   _cfg = cfg;
   // Initialise learning state here (not in reset): a geometry/debounce reset must
@@ -38,6 +43,10 @@ void CvEngine::reset() {
   _reportedSpaces = -1;
   _pendingSpaces  = -1;
   _pendingCnt     = 0;
+  _occFracRef  = 0.0f;
+  _occRefInit  = false;
+  _moveCnt     = 0;
+  _cameraMoved = false;
 }
 
 void CvEngine::recalibrate(int index) {
@@ -326,6 +335,7 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   out.occupied_fraction  = 0.0f;
   out.dark               = false;
   out.warming            = false;
+  out.camera_moved       = _cameraMoved;
   out.pitch_m            = 0.0f;
   out.pitch_learned_m    = _carPitchLearned;
   out.pitch_samples      = _learnSamples;
@@ -447,6 +457,23 @@ bool CvEngine::analyze(const uint8_t* jpg, size_t len, int srcW, int srcH, CurbR
   out.can_fit            = (ag.longest_free_run_m >= (pitch - _cfg->clearInteriorM));
   out.occupied_fraction  = (ag.enabled_len > 0.0f) ? (ag.occupied_len / ag.enabled_len) : 0.0f;
   out.est_free_spaces    = reported;
+
+  // Camera-moved detector: a sudden, sustained scene-wide occupancy step (unlike
+  // gradual parking) most likely means the camera was nudged and the calibration is
+  // now stale. Sticky once tripped; cleared by reset() / mark-all-empty. Skipped
+  // while warming (the reference is still being established).
+  float occFrac = out.occupied_fraction;
+  if (!_occRefInit) { _occFracRef = occFrac; _occRefInit = true; }
+  else if (!_cameraMoved && !out.warming) {
+    if (fabsf(occFrac - _occFracRef) > CAM_MOVE_DELTA) {
+      if (_moveCnt < 0xFF) _moveCnt++;
+      if (_moveCnt >= CAM_MOVE_FRAMES) _cameraMoved = true;
+    } else {
+      _moveCnt = 0;
+      _occFracRef += CAM_REF_ALPHA * (occFrac - _occFracRef);
+    }
+  }
+  out.camera_moved = _cameraMoved;
 
   // Per-strip breakdown (diagnostic; raw per-strip spaces, no separate hold).
   out.nStrips = nStrips;

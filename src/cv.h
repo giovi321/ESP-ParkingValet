@@ -50,6 +50,7 @@ struct CurbResult {
   float    occupied_fraction;  // 0..1 over in-range cells
   bool     dark;               // light-confidence gate tripped
   bool     warming;            // baselines freshly (re)seeded: numbers low-confidence until the EMA settles
+  bool     camera_moved;       // sudden scene-wide occupancy step => likely camera nudged, needs recalibration
   // Pitch observability (so the configured-vs-observed disagreement is visible; spec §5):
   float    pitch_m;            // pitch actually used for est_free_spaces this frame
   float    pitch_learned_m;    // auto-learn refiner estimate (0 = not learned yet)
@@ -143,6 +144,14 @@ class CvEngine {
   // the adaptive EMA warms up").
   static const uint16_t CV_WARMUP_FRAMES = 20;
   uint16_t _warmupLeft = 0;
+
+  // Camera-moved detector: a nudge flips a large fraction of cells at once, unlike
+  // gradual parking. Track a slow reference of occupied_fraction; a large sustained
+  // step raises a sticky flag (cleared by reset / mark-all-empty).
+  float    _occFracRef = 0.0f;
+  bool     _occRefInit = false;
+  uint8_t  _moveCnt    = 0;
+  bool     _cameraMoved = false;
 
   bool ensureBuffers(int w, int h);
   uint32_t roiSignature() const;

@@ -1116,7 +1116,7 @@ async function poll(){
     $("#curbRange").textContent=(cvOk&&curb.reliable_range_m!=null)?curb.reliable_range_m.toFixed(0)+"m":"–";
     // Low-confidence badge: dark scene or freshly-seeded baselines still settling.
     const cc=$("#curbConf");
-    if(cc){ const msg=warming?"baselines warming up":(curb.dark?"low light":""); cc.textContent=msg; cc.style.display=msg?"":"none"; }
+    if(cc){ const msg=curb.camera_moved?"camera may have moved — re-check calibration":(warming?"baselines warming up":(curb.dark?"low light":"")); cc.textContent=msg; cc.style.display=msg?"":"none"; cc.style.color=curb.camera_moved?"var(--bad,#e05555)":"var(--warn,#e0a800)"; }
     // Per-strip breakdown (only shown when more than one strip is defined)
     const csEl=$("#curbStrips");
     if(csEl){ const ss=(cvOk&&Array.isArray(curb.strips))?curb.strips:[];
