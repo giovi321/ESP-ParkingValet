@@ -199,6 +199,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Train occupancy classifier -> clf_model.h")
     ap.add_argument("--in", dest="inp", required=True, help="capture records (.jsonl)")
     ap.add_argument("--out", dest="out", default="../src/clf_model.h", help="output header path")
+    ap.add_argument("--json", dest="json_out", default=None,
+                    help="also write the folded model as JSON {w:[16],b} for the device's "
+                         "hot-swap endpoint (POST /api/model)")
     args = ap.parse_args(argv)
     feats, labels, groups, verified = load_records(args.inp, with_meta=True)
     if len(feats) == 0:
@@ -208,6 +211,11 @@ def main(argv=None):
     _report(feats, labels, groups, verified)
     W, B = emit_model_header(feats, labels, "logreg", args.out)
     print("[train] wrote %s (logreg, %d features)" % (args.out, len(W)))
+    if args.json_out:
+        with open(args.json_out, "w") as f:
+            json.dump({"w": [float(v) for v in W], "b": float(B)}, f)
+        print("[train] wrote %s (upload with: curl -u admin:PASS -X POST "
+              "--data @%s http://<device>/api/model)" % (args.json_out, args.json_out))
     return 0
 
 if __name__ == "__main__":

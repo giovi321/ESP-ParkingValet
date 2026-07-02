@@ -263,6 +263,10 @@
       <label>Capture auth header value</label><input type="password" id="c_captureAuthHeaderValue" placeholder="unchanged">
       <div class="chk"><input type="checkbox" id="c_captureTlsInsecure"><label for="c_captureTlsInsecure" style="margin:0;color:var(--txt)">Skip TLS certificate check (https capture endpoint)</label></div>
       <div class="btns"><button class="btn" id="saveOccEngine">Save</button></div>
+      <label style="margin-top:10px">Model hot-swap <span id="clfStat" class="pill" style="font-size:11px">–</span></label>
+      <textarea id="modelJson" rows="2" placeholder='{"w":[...16 floats...],"b":0.0}' style="width:100%;font-family:monospace;font-size:11px"></textarea>
+      <div class="btns"><button class="btn" id="uploadModel">Upload model</button><button class="btn" id="clearModel">Clear model</button></div>
+      <div class="hint">Push a freshly-trained model without reflashing. Train with <code>--json model.json</code>, then paste its contents here and Upload. A runtime model overrides the embedded one; Clear reverts to the embedded model or the edge engine.</div>
       <div class="hint">"Trained classifier" uses the embedded model when present, otherwise falls back to the edge engine. Turn on Training capture to log per-cell feature vectors (throttled ~30 s) to the Capture URL for offline training.</div>
     </div>
   </section>
@@ -1033,6 +1037,19 @@ $("#saveWifi").onclick=()=>save(["staSsid","staPass","hostname","apSsid","apPass
 $("#saveWatchdog").onclick=()=>save(["offlineRebootMin","apRetryMin"]);
 $("#saveWg").onclick=()=>save(["wgEnabled","wgPrivateKey","wgAddress","wgPeerPublicKey","wgEndpointHost","wgEndpointPort","wgAllowedIps","wgPresharedKey","wgKeepalive"]);
 $("#saveOccEngine").onclick=()=>save(["occupancyEngine","trainCapture","captureUrl","captureAuthHeaderName","captureAuthHeaderValue","captureTlsInsecure"]);
+$("#uploadModel").onclick=async()=>{
+  let body; try{ body=JSON.parse($("#modelJson").value); }catch(e){ toast("Invalid JSON",true); return; }
+  if(!Array.isArray(body.w)||body.w.length!==16||typeof body.b!=="number"){ toast("Need w[16] and b",true); return; }
+  try{ const r=await api("/api/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    toast(r.runtime?"Model uploaded & active":"Uploaded"); await poll();
+  }catch(e){ toast("Upload failed"+(e&&e.err?": "+e.err:""),true); }
+};
+$("#clearModel").onclick=async()=>{
+  if(!confirm("Remove the runtime model and revert to the embedded model / edge engine?")) return;
+  try{ await api("/api/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({clear:true})});
+    toast("Runtime model cleared"); await poll();
+  }catch(e){ toast("Clear failed",true); }
+};
 $("#testWebhook").onclick=async()=>{ try{ const r=await api("/api/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"test_webhook"})}); toast(r.ok?("Test sent · HTTP "+r.code):("Test failed · "+r.code),!r.ok);}catch(e){toast("Test failed",true);} };
 
 function action(a,msg,confirmMsg){ return async()=>{ if(confirmMsg&&!confirm(confirmMsg)) return;
@@ -1138,6 +1155,7 @@ async function poll(){
     if(st.afStatus!=null){ const a=st.afStatus; $("#sAf").textContent=a<0?"n/a":(a===16?"focused":(a===112?"idle":"busy (0x"+a.toString(16)+")")); }
     if(st.mqttEnabled!==undefined){ const t=st.mqttEnabled?(st.mqttConnected?"connected":"connecting…"):"off"; $("#sMqtt").textContent=t; const ms=$("#mqttStat"); if(ms)ms.textContent=t; }
     { const ws=$("#wgStat"); if(ws){ const wsv=st.wgState||(st.wgEnabled?"…":"off"); ws.textContent=wsv; ws.className="pill "+(wsv==="up"?"sta":(wsv==="off"?"":"ap")); } }
+    { const cs=$("#clfStat"); if(cs){ const t=st.clfRuntime?"runtime model":(st.clfAvailable?"embedded model":"no model (edge)"); cs.textContent=t; cs.className="pill "+(st.clfRuntime?"sta":""); } }
     if(st.lastSend&&st.lastSend.code) $("#lastSend").textContent=`Last send: ${st.lastSend.event} · count ${st.lastSend.count} · HTTP ${st.lastSend.code} · ${st.lastSend.agoS}s ago`;
     if(st.spoolQueued!=null){ const sp=$("#spoolStat"); if(sp) sp.textContent=st.spoolMode===0?"Spool off":`Queued: ${st.spoolQueued} · ${(st.spoolBytes/1024).toFixed(1)} KB`; }
     $("#pwBanner").classList.toggle("show",!!st.mustChangePass);

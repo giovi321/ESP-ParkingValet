@@ -10,6 +10,8 @@
 #include "mqttc.h"
 #include "spool.h"
 #include "wg.h"
+#include "clf.h"
+#include "features.h"    // CLF_NFEAT
 #include "web_ui.h"      // index_html_gz / index_html_gz_len (generated)
 #include "logbuf.h"
 #include "version.h"     // PARKINGCAM_VERSION + BUILD_GIT_SHA
@@ -106,6 +108,8 @@ static void handleState() {
   doc["mqttConnected"]  = mqttConnected();
   doc["wgEnabled"]      = g_cfg->wgEnabled;
   doc["wgState"]        = wgStateStr();   // off | wait-wifi | wait-clock | connecting | up | down
+  doc["clfRuntime"]     = clfRuntimePresent();   // a hot-swapped model is loaded
+  doc["clfAvailable"]   = clfAvailable();        // runtime OR embedded model present
   uint32_t spQ = 0, spB = 0; spoolStats(spQ, spB);
   doc["spoolMode"]      = g_cfg->spoolMode;
   doc["spoolQueued"]    = spQ;
@@ -263,6 +267,34 @@ static void handleRestore() {
   server.send(saved ? 200 : 500, "application/json",
               saved ? "{\"ok\":true,\"reboot\":true}" : "{\"ok\":false}");
   if (saved) scheduleReboot(900);
+}
+
+// Hot-swap the occupancy classifier: POST {"w":[16 floats],"b":float} stores and
+// activates a runtime model in NVS (no reflash); POST {"clear":true} drops it and
+// reverts to the embedded model / edge engine.
+static void handleModel() {
+  if (!requireAuth()) return;
+  String body = server.arg("plain");
+  JsonDocument doc;
+  if (body.isEmpty() || deserializeJson(doc, body) != DeserializationError::Ok) {
+    server.send(400, "application/json", "{\"ok\":false,\"err\":\"bad json\"}");
+    return;
+  }
+  if (doc["clear"].as<bool>()) {
+    clfClearRuntime();
+    server.send(200, "application/json", "{\"ok\":true,\"runtime\":false}");
+    return;
+  }
+  JsonArrayConst w = doc["w"].as<JsonArrayConst>();
+  if (w.isNull() || w.size() != CLF_NFEAT || !doc["b"].is<float>()) {
+    server.send(400, "application/json", "{\"ok\":false,\"err\":\"need w[16] and b\"}");
+    return;
+  }
+  float wv[CLF_NFEAT]; int k = 0;
+  for (JsonVariantConst v : w) { if (k < CLF_NFEAT) wv[k++] = v.as<float>(); }
+  bool ok = clfSaveRuntime(wv, doc["b"].as<float>());
+  server.send(ok ? 200 : 400, "application/json",
+              ok ? "{\"ok\":true,\"runtime\":true}" : "{\"ok\":false,\"err\":\"non-finite weights\"}");
 }
 
 static void handleAction() {
@@ -426,6 +458,7 @@ void webBegin(Config* cfg, CurbResult* last) {
   server.on("/api/log",    HTTP_GET,  handleLog);
   server.on("/api/backup", HTTP_GET,  handleBackup);
   server.on("/api/restore",HTTP_POST, handleRestore);
+  server.on("/api/model",  HTTP_POST, handleModel);
   server.on("/update",     HTTP_POST, handleOtaDone, handleOtaUpload);
 
   // Common captive-portal probe endpoints -> redirect to root in AP mode.

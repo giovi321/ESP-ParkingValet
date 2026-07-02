@@ -19,6 +19,7 @@
 #include "logbuf.h"
 #include "wg.h"
 #include "capture.h"
+#include "clf.h"
 #include "version.h"   // PARKINGCAM_VERSION + BUILD_GIT_SHA (folds in generated build_info.h)
 
 static Config     cfg;
@@ -274,6 +275,7 @@ void setup() {
     log_i("camera OK");
   }
 
+  clfBegin();   // load a hot-swapped runtime classifier from NVS, if one was pushed
   cvEngine.begin(&cfg);
   lastResult.valid = false;
 
