@@ -110,3 +110,23 @@ All bodies that depend on full curb field semantics are marked `// TODO(T6-T10)`
 - WiFi / WireGuard / MQTT / webhook / stats / spool / OTA / backup-restore / auth / NTP / snapshot: zero changes
 - Secret masking and all non-occupancy `Config` fields: intact
 - No hardware flashed
+
+---
+
+## Fix wave (2026-06-30)
+
+**Commit:** `4ed2c0f2daca4328964985015f38013c6d0e4a41`  
+**Subject:** fix(curb): move per-frame CurbResult off the loopTask stack + comment accuracy
+
+Three fixes applied to reduce stack pressure and improve code clarity:
+
+1. **Stack safety**: Moved `CurbResult r;` declaration from loop-local to function-static in `src/main.cpp` `loop()` (line 354). CurbResult is ~4 KB; loopTask stack is 8 KB. Function-static places it in .bss instead of stack, preserving the old result on analyze failure while reducing per-iteration pressure.
+
+2. **Comment accuracy**: Updated TODO in `buildStatsJson()` (line 225) from "rename/repoint stats keys in Task C3.4" to "repoint curb metric value in Task C3.4 (key rename done)" — the key rename (`roi_count` → `cell_count`) is complete; only the VALUE (curb metric) repoint is deferred.
+
+3. **TODO markers**: Added inline `// TODO(T6-T10): strip-index used as cell-index stub` at both `cvRecalibrate(i)` and `cvMarkOccupied(i)` call sites in `src/mqttc.cpp` (lines 272–273) to document transitional index semantics pending Task C3.5.
+
+**Verification:**
+- `pio run`: `[SUCCESS]` — Flash: 65.9% (1295217 / 1966080 bytes)
+- Exactly one `CurbResult r;` local changed to static in `loop()`
+- All three edits verified in committed diff

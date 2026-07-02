@@ -1,11 +1,12 @@
 # ESP-ParkingValet
 
-An ESP32-CAM that watches a few marked parking bays and counts the cars. All of the computer
-vision runs on the board, so no picture is ever sent off-device just to count. When the number of
-occupied bays changes it POSTs the photo to a webhook, and it keeps Home Assistant up to date over
-MQTT.
+An ESP32-CAM that watches a stretch of on-street curb and estimates how much of it is free. There
+are no fixed bays: you trace the curb and the board reports free curb metres, the longest free run,
+and an estimated number of free spaces. All of the computer vision runs on the board, so no picture
+is ever sent off-device just to measure it. When the estimated number of free spaces changes it
+POSTs the photo to a webhook, and it keeps Home Assistant up to date over MQTT.
 
-You configure everything from the web UI, so changing a threshold never means reflashing. On boot
+You configure everything from the web UI, so changing a tunable never means reflashing. On boot
 it joins your WiFi; if it can't, it brings up its own setup hotspot. Holding the BOOT button for
 five seconds forces that hotspot back whenever you need it.
 
@@ -22,18 +23,20 @@ five seconds forces that hotspot back whenever you need it.
 
 ## What it does
 
-- Counts cars on the board with classical CV. Each bay is a polygon, and occupancy comes from the
-  edge energy inside it, with hysteresis and a debounce so the number doesn't flicker. There's no
+- Estimates free curb space on the board with classical CV. You trace the curb into strips that
+  the board splits into equal-ground-length cells; each cell's occupancy comes from the edge energy
+  inside it, with hysteresis and a debounce so the reading doesn't flicker. Free curb metres, the
+  longest free run, and an estimated free-space count come from the run of free cells. There's no
   model and nothing to train.
-- POSTs the JPEG to a webhook when the count changes (or when it crosses a threshold you set).
-  Optional auth header, http or https.
-- Keeps count changes if the network is down and sends them once it's back, surviving a reboot.
-  The queue lives on flash and is bounded; you pick count-only or photo+count.
-- Sends a second telemetry webhook on a timer (IP, RSSI, heap, count, version, and so on).
+- POSTs the JPEG to a webhook when the estimated free spaces change (or when it crosses a threshold
+  you set). Optional auth header, http or https.
+- Keeps changes if the network is down and sends them once it's back, surviving a reboot.
+  The queue lives on flash and is bounded; you pick record-only or photo+record.
+- Sends a second telemetry webhook on a timer (IP, RSSI, heap, free spaces, version, and so on).
 - Publishes to MQTT with Home Assistant auto-discovery: one HA device, each value on its own
   topic, the firmware version and a GitHub link in the device info, and an availability (LWT)
   topic. TLS works too.
-- Web UI with a live snapshot, a drag-to-edit polygon editor, live per-bay edge values, an
+- Web UI with a live snapshot, a drag-to-trace curb editor, live per-cell edge values, an
   on-device serial console, and config backup/restore. Every setting is editable at runtime and
   saved to NVS.
 - Drives the OV5640 autofocus (focus once, continuous, or off) with a *Focus now* button.
@@ -44,19 +47,20 @@ five seconds forces that hotspot back whenever you need it.
 
 ---
 
-## How the counting works
+## How the estimate works
 
-It grabs a frame about once a second and looks at each bay you've drawn. A parked car adds a lot
-of edges and texture next to plain asphalt, and edges hold up far better than brightness when the
-sun moves around, so the signal is the edge energy inside each polygon. The test is point-in-
-polygon, so a bay can be any shape, not just a rectangle. Separate enter and exit thresholds, a
-few-frame debounce, and a slowly-adapting "empty" baseline keep the number steady through shadows,
-clouds, and someone wandering across the lot.
+It grabs a frame about once a second and looks at each cell along the curb you've traced. A parked
+car adds a lot of edges and texture next to plain asphalt, and edges hold up far better than
+brightness when the sun moves around, so the signal is the edge energy inside each cell. Separate
+enter and exit thresholds, a few-frame debounce, and a slowly-adapting "empty" baseline keep the
+reading steady through shadows, clouds, and someone wandering across the frame.
 
-<p align="center"><img src="docs/cv-pipeline.svg" alt="Pipeline: capture JPEG, decode to grayscale, per-slot edge energy, count, trigger check, POST and MQTT publish, looping otherwise." width="100%"></p>
+<p align="center"><img src="docs/cv-pipeline.svg" alt="Pipeline: capture JPEG, decode to grayscale, per-cell edge energy, free-space estimate, trigger check, POST and MQTT publish, looping otherwise." width="100%"></p>
 
-`count` is how many enabled bays are occupied, worked out on the board ([`src/cv.cpp`](src/cv.cpp)).
-The webhook and MQTT consumers just receive it.
+From the run of free cells the board works out the headline numbers ([`src/cv.cpp`](src/cv.cpp)):
+free curb in metres (`free_curb_m`), the longest unbroken free run (`longest_free_run_m`), an
+estimated number of free spaces (`est_free_spaces`), and whether a car can still fit (`can_fit`).
+The webhook and MQTT consumers just receive them.
 
 > **Daylight only.** A bare OV5640 sees almost nothing in the dark; for night you'd add IR light
 > and re-tune. The lens is an autofocus module rated for roughly 20-250 cm, so cars further away
@@ -155,54 +159,64 @@ you can check it against `git rev-parse --short HEAD`.
 
 ---
 
-## Drawing the bays
+## Tracing the curb
 
-This is the part that decides how well it works. Mount the camera so every bay is in frame, then:
+There are no fixed bays. You trace the curb, anchor it with a real length, and the board lays out
+equal-ground-length cells and turns the run of free cells into free metres and an estimated
+free-space count. This is the part that decides how well it works. Mount the camera so the whole
+curb is in frame, then:
 
-1. Open **Live**, tap **+ Add slot** (you get a 4-point quad), drag the body to move it and the
-   dots to match the bay. Use **+ point / - point** for angled or L-shaped bays (3 to 8 vertices).
-   Name them and **Save slots**.
-2. Watch each bay's **Edge** value. Empty asphalt reads low, a parked car reads much higher.
-3. In **Detection**, set the global edge threshold between those two. If one bay sits in shade,
-   give it its own threshold (0 means use the global one).
-4. If the count twitches, raise **Stable frames** or **Hysteresis**. **Capture interval** trades
-   responsiveness for CPU.
-5. Leave it running from sun to cloud and confirm it doesn't flip on moving shadows.
+1. Open **Live** and, in the **Curb strips** card, tap **Trace** and tap along the curb to place
+   points. Tap **Done**. Use **+ Strip** for a second run of curb. Give each strip its real length
+   in metres — this is the metric anchor that scales every reading.
+2. Set **Target cell length (m)** and tap **Generate cells**. The browser splits each strip into
+   equal-ground-length cells (near-curb cells take more image arc per metre to correct for the
+   oblique view). Click any cell that isn't real parking curb — a driveway, a crossing, a hydrant —
+   to toggle it into a **dead zone** so it never counts. Tap **Save strips & cells**.
+3. Watch each cell's live **Edge** value. Empty asphalt reads low, a parked car reads much higher.
+4. In **Detection**, pick the occupancy mode and set the threshold (Absolute) or delta (Relative)
+   between those two. If the reading twitches, raise **Stable frames** or **Hysteresis**.
+5. Set **Car pitch (m)** (vehicle length plus gap) so free metres convert to a sensible free-space
+   count. The fastest way is the **street-full calibration**: park the curb bumper-to-bumper, enter
+   the car count N, and **Calibrate** — it sets car pitch to strip length ÷ N. **Interior clearance**
+   and **End clearance** trim the usable metres between and at the ends of parked cars.
+6. Leave it running from sun to cloud and confirm the estimate doesn't jump on moving shadows.
 
-If the count differs between sunny and overcast — empty bays reading occupied in hard sun, or
-occupied bays reading empty in flat light — switch **Occupancy mode** to **Relative**. Each bay tracks
-its own auto-learned "empty" edge level (its **Baseline**) and trips only when the edge rises by
-**Relative delta** above it, so the whole scene drifting brighter or darker cancels out.
+If the reading differs between sunny and overcast — empty curb reading occupied in hard sun, or an
+occupied cell reading empty in flat light — use **Relative** occupancy (the default). Each cell
+tracks its own auto-learned "empty" edge level (its **Baseline**) and trips only when the edge rises
+by the **delta** above it, so the whole scene drifting brighter or darker cancels out.
 
 Two separate things, don't confuse them:
 
-- **Relative delta** is the *threshold* — how far above empty counts as a car. **You** set this, once,
-  globally. Tune it by watching the **Edge** and **Base** columns: pick a value a bit below the gap a
-  parked car opens over its empty baseline.
-- **Baseline** is *what empty looks like*, per bay. It is **automatic** — it self-learns and keeps
+- The **delta** is the *threshold* — how far above empty counts as a car. **You** set this, once,
+  globally. Tune it by watching the **Edge** and **Baseline** columns: pick a value a bit below the
+  gap a parked car opens over its empty baseline.
+- **Baseline** is *what empty looks like*, per cell. It is **automatic** — it self-learns and keeps
   following the light, so it covers the whole sun→cloud continuum on its own. You never type a
-  baseline, and **mark empty** does not change the delta.
+  baseline, and marking a cell empty does not change the delta.
 
 Because the Baseline tracks light continuously, you do **not** teach it separate "sunny" and "cloudy"
-states — pressing **mark empty** twice doesn't store two situations; each press just overwrites the
-Baseline with the current view. You only seed it directly when it's wrong: each Slots-table row has a
-**mark empty** button that snaps just that bay's Baseline to the current view, so you can calibrate one
-empty bay while the others stay occupied (a real lot is rarely all-empty at once). The Detection card's
-**Mark all bays empty** does every bay for an all-clear moment. Use it to fix a mis-reading bay, after a
-boot with a car already parked, or after you move the camera — not on a schedule.
+states — each mark-empty just overwrites the Baseline with the current view. You only seed it directly
+when it's wrong: click a cell's chip in the **Cells** card to snap just that cell's Baseline to the
+current view, so you can calibrate one empty cell while others stay occupied (a real curb is rarely
+all-empty at once). The Detection card's **Mark all cells empty** does every cell for an all-clear
+moment. Use it to fix a mis-reading cell, after a boot with a car already parked, or after you move
+the camera — not on a schedule.
 
 Baselines are saved to flash and reloaded on boot, so a reboot — the offline-reboot watchdog, an OTA,
-a power cycle — no longer throws the learning away and makes occupied bays read empty until they turn
+a power cycle — no longer throws the learning away and makes occupied cells read empty until they turn
 over. (The save is throttled and only happens when a baseline actually moves, so flash wear stays
-low.) The one case left is the very first time a bay is seeded with a car already in it, before
-anything is stored: press that row's **mark occupied** button to fix it on the spot. In relative mode
-it re-bases the bay so it reads occupied immediately and then self-heals — once the car leaves, the
-edge drops below the new reference and the Baseline relearns true empty. **Mark occupied** is the
-inverse of **mark empty**; both are per-bay.
+low.) The one case left is the very first time a cell is seeded with a car already in it, before
+anything is stored: mark that cell occupied to fix it on the spot. In relative mode it re-bases the
+cell so it reads occupied immediately and then self-heals — once the car leaves, the edge drops below
+the new reference and the Baseline relearns true empty.
 
 (Absolute mode stays available and is boot-accurate if you prefer a fixed threshold.)
 
-Polygons are stored normalized (0 to 1), so they survive a resolution change.
+If you move the camera, re-trace the strips: cell quads are pose-specific and must be redrawn after
+the camera angle changes. Use **Camera moved / recalibrate** to re-seed every cell baseline from the
+current empty view. Strip geometry is stored normalized (0 to 1), so it survives a resolution change.
 
 ---
 
@@ -271,27 +285,32 @@ Everything here is editable in the UI and saved to NVS. Defaults come from
 | | `mqttUser` / `mqttPass` | — | Broker credentials (optional). |
 | | `mqttBaseTopic` | `parking-valet` | Per-field topics live under here. |
 | | `mqttDiscovery` / `mqttDiscoveryPrefix` | `true` / `homeassistant` | HA auto-discovery. |
-| | `mqttIntervalS` | `60` | Diagnostics refresh interval (count goes out immediately). |
-| Trigger | `triggerMode` | `0` | 0 sends on any count change, 1 sends when it crosses threshold N. |
+| | `mqttIntervalS` | `60` | Diagnostics refresh interval (the free-space estimate goes out immediately). |
+| Trigger | `triggerMode` | `0` | 0 sends on any change in estimated free spaces, 1 sends when it crosses threshold N. |
 | | `triggerThreshold` | `1` | N, for threshold mode. |
-| | `minSendIntervalMs` | `5000` | Min gap between *new* count-change sends (rate-limit at the source). A queued backlog drains faster than this — capped at 1 s/entry — so a reconnect doesn't leave the latest count stuck behind stale ones. |
+| | `minSendIntervalMs` | `5000` | Min gap between *new* free-space-change sends (rate-limit at the source). A queued backlog drains faster than this — capped at 1 s/entry — so a reconnect doesn't leave the latest estimate stuck behind stale ones. |
 | | `heartbeatIntervalS` | `0` | 0 is off, otherwise a periodic snapshot. |
-| Detection | `occupancyMode` | `0` | `0` absolute edge threshold, `1` relative to each bay's adaptive empty baseline (cancels sun/shade drift). |
+| Detection | `occupancyMode` | `1` | `0` absolute edge threshold, `1` relative to each cell's adaptive empty baseline (cancels sun/shade drift). Default is relative. |
 | | `edgeThreshold` | `12.0` | Absolute mode: global occupancy threshold (mean abs gradient). |
 | | `relDelta` | `6.0` | Relative mode: edge rise above the empty baseline that counts as occupied. |
 | | `hysteresis` | `0.25` | Enter at thr·(1+h), exit at thr·(1−h). |
 | | `baselineEma` | `0.02` | How fast the empty baseline adapts (the live reference in relative mode). |
-| | `stableFrames` | `4` | Cycles a bay's state must hold before it commits. |
+| | `stableFrames` | `4` | Cycles a cell's state must hold before it commits. |
 | | `captureIntervalMs` | `1500` | Capture/analyze cadence. |
+| Curb | `carPitchM` | `6.0` | Assumed length of one parked car plus gap; converts free metres to an estimated free-space count. |
+| | `clearInteriorM` | `1.2` | Clearance trimmed between parked cars when estimating free spaces. |
+| | `clearEndM` | `1.8` | Clearance trimmed at each end of a free run. |
+| | `smoothMode` | `1` | Temporal smoothing of the per-cell reading. |
+| | `darkLumaThresh` | `40.0` | Mean luma below this raises the `dark` flag. |
+| | `pitchLearn` | `1` | Auto-learn car pitch from detections (street-full calibration turns it off). |
 | Image | `framesize` | `9` (SVGA 800×600) | QVGA up to UXGA; bigger is sharper but slower. |
 | | `jpegQuality` | `12` | 8 (best) to 63 (smallest). Below 8 the OV5640 can produce bad frames, so it's clamped to 8. |
 | | `vFlip` / `hMirror` | `false` | Orientation. |
 | | `brightness` / `contrast` / `saturation` | `0` | −2 to 2. |
 | | `awb` / `aec` | `true` | Auto white-balance / auto-exposure. |
 | | `afMode` | `1` | Autofocus: 0 off/fixed, 1 focus once, 2 continuous. |
-| ROI (per bay) | `points` | — | Polygon vertices (3 to 8), each normalized 0 to 1. |
-| | `threshold` | `0` | Per-bay override (0 uses the global one). |
-| | `enabled` | `true` | Disabled bays show on screen but don't count. |
+| Curb geometry | `strips` | — | Traced curb strips (name, real length in metres, cell count). Set by tracing in the web UI, not typed by hand. |
+| | `cells` | — | Equal-ground-length cells generated from the strips (normalized 0 to 1). Toggle a cell off to make it a dead zone. |
 
 ### Remote access (WireGuard)
 
@@ -321,16 +340,19 @@ enable flash encryption if at-rest protection matters.
 
 | Part | Type | Description |
 |---|---|---|
-| `image` | file (JPEG) | Filename `<host>_<count>_<uptimeS>.jpg`. |
+| `image` | file (JPEG) | Filename `<hostname>_<uptimeS>.jpg`. Absent on a count-only replay. |
 | `device` | field | Hostname. |
 | `event` | field | `count_changed`, `heartbeat`, or `test`. |
-| `count` / `prev_count` | field | New and previous occupied count. |
-| `slots` | field | JSON array of per-bay booleans, e.g. `[true,false,true]`. |
+| `free_curb_m` | field | Estimated free curb in metres (2 decimals). |
+| `est_free_spaces` / `prev_est_free_spaces` | field | New and previous estimated free-space count (an estimate; the change is the trigger). |
+| `can_fit` | field | `true`/`false` — whether a car still fits. |
+| `reliable_range_m` | field | How far down the curb the estimate is trustworthy, metres (2 decimals). |
+| `occupied_fraction` | field | Fraction of the tracked curb reading occupied (3 decimals). |
 | `ts` / `time` | field | UTC timestamp: epoch seconds and ISO8601. Both empty until NTP syncs. |
-| `queued` / `queued_age_s` | field | `queued` is `true` on a replayed event and `false` on a live one; `queued_age_s` is how long it waited. |
+| `queued` / `queued_age_s` | field | `queued` is `true` on a replayed event and `false` on a live one; `queued_age_s` (present only when queued) is how long it waited. |
 
-The image webhook deliberately carries no diagnostics, just the photo, the occupancy, and the
-timestamp. Diagnostics go to MQTT and the stats webhook. Your auth header, if set, goes on every
+The image webhook deliberately carries no diagnostics, just the photo, the free-space metrics, and
+the timestamp. Diagnostics go to MQTT and the stats webhook. Your auth header, if set, goes on every
 request, and the clock is NTP-synced in UTC. Any HTTP endpoint can take it; the JPEG arrives as a
 multipart file field named `image`. If the offline queue is on, changes that happened during an
 outage get replayed here once the link is back (see [When the link drops](#when-the-link-drops)),
@@ -340,14 +362,15 @@ and a count-only replay arrives with no `image` part, so the receiver has to han
 
 A separate `application/json` POST every `statsIntervalS` to `statsUrl`. Fields: `device`,
 `version`, `build`, `mode`, `ip`, `rssi`, `ssid`, `mac`, `uptime_s`, `heap_free`, `psram_free`,
-`reset_reason`, `roi_count`, `count`, `cv_ms`, `analysis`, `webhook_enabled`, `ts` (UTC epoch),
-`time` (ISO8601). The **Send stats now** button posts it on demand.
+`reset_reason`, `strip_count`, `cell_count`, `est_free_spaces`, `free_curb_m`, `can_fit`,
+`reliable_range_m`, `occupied_fraction`, `cv_ms`, `analysis` (e.g. `200x150`), `webhook_enabled`,
+`ts` (UTC epoch), `time` (ISO8601). The **Send stats now** button posts it on demand.
 
 ---
 
 ## When the link drops
 
-A count used to vanish if the network was down at the wrong moment. The board POSTed once, and if
+A change used to vanish if the network was down at the wrong moment. The board POSTed once, and if
 nothing answered, the change was gone. Worse, it moved on as though it had sent, so it never tried
 again.
 
@@ -359,15 +382,16 @@ a full reboot, including the offline-reboot watchdog firing in the middle of an 
 queue fills up, the oldest entry drops off.
 
 When the link returns, the backlog drains quickly — up to one entry per second, not one per
-`minSendIntervalMs` — so the most recent count reaches the channel within seconds instead of
+`minSendIntervalMs` — so the most recent estimate reaches the channel within seconds instead of
 trailing the whole backlog. (`minSendIntervalMs` still rate-limits how often *new* changes are
 queued; it no longer throttles replay.) If the receiver is down, delivery backs off to the full
 interval rather than hammering it.
 
 You choose what gets saved in the **Offline spool** card:
 
-- **Count only** (the default): just the record (count, previous count, the per-bay booleans, and
-  when it happened). Tiny, so the queue runs deep.
+- **Count only** (the default): just the record (the free-space metrics — free curb metres,
+  estimated free spaces and previous, can-fit, reliable range, occupied fraction — and when it
+  happened). Tiny, so the queue runs deep.
 - **Photo + count:** the JPEG as well. Much heavier; see the capacity note below.
 - **Off:** the old behavior, send once and move on.
 
@@ -393,20 +417,29 @@ Queue depth and size show live in the card, and **Clear queue** empties it.
 Set the broker up in the **MQTT** tab: host, port, optional TLS (mqtts), username/password, base
 topic, discovery, and interval. Once it's on, the board:
 
-- Publishes each field to its own retained topic under the base topic, like `parking-valet/count`,
-  `/rssi`, `/ip`, `/ssid`, `/uptime_s`, `/heap_free`, `/psram_free`, `/roi_count`, `/mode`,
-  `/version`, `/build`, `/time`. `count` goes out the moment it changes; the rest refresh on the
-  interval.
+- Publishes each field to its own retained topic under the base topic, like
+  `parking-valet/free_curb_m`, `/longest_free_run_m`, `/est_free_spaces`, `/reliable_range_m`,
+  `/occupied_fraction`, `/cell_count`, plus diagnostics `/rssi`, `/ip`, `/ssid`, `/uptime_s`,
+  `/heap_free`, `/psram_free`, `/mode`, `/version`, `/build`, `/time`. Two binary topics carry
+  `ON`/`OFF`: `/can_fit` (room for a car) and `/dark` (low light). The estimate goes out the moment
+  it changes; the rest refresh on the interval.
 - With auto-discovery on, publishes retained configs under
-  `homeassistant/sensor/parkingvalet/<field>/config`. Home Assistant then builds one device
-  (*ESP-ParkingValet*) that carries the firmware version (`sw_version`) and a GitHub link
-  (`configuration_url`). Device classes and units are filled in (signal_strength, duration,
-  data_size, timestamp, and so on), and the diagnostics are tagged as such.
+  `homeassistant/sensor/parkingvalet/<key>/config` (and `binary_sensor/…/config` for `can_fit` and
+  `dark`). Home Assistant then builds one device (*ESP-ParkingValet*) that carries the firmware
+  version (`sw_version`) and a GitHub link (`configuration_url`). Device classes and units are
+  filled in (signal_strength, duration, data_size, timestamp, and so on), and the diagnostics are
+  tagged as such. It also discovers the camera snapshot (`/photo`) and two control buttons that
+  publish to `/cmd/photo` and `/cmd/mark_all_free`.
 - Sets an availability (LWT) topic, `parking-valet/availability` (`online`/`offline`), so HA marks
   the device unavailable if it drops off the network.
 
-It carries the same information as the two webhooks. The photo itself stays on the image webhook.
-**Publish now** in the MQTT tab pushes immediately, and the System tab shows the connection state.
+The old `parking-valet/count` and `/roi_count` topics and the per-bay `bayN` sensors and selects
+are gone; on connect the firmware publishes them once as empty retained messages to purge the
+legacy entities from HA.
+
+It carries the same information as the two webhooks. The photo itself stays on the image webhook,
+though a snapshot can also be pushed to `parking-valet/photo` on demand. **Publish now** in the MQTT
+tab pushes immediately, and the System tab shows the connection state.
 
 ---
 
@@ -425,14 +458,14 @@ In STA mode every route needs Digest auth. In AP/setup mode they're open.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/` | The web UI (gzipped). |
-| `GET` | `/api/state` | Live status: mode, IP, RSSI, count, per-bay values, heap, AF and MQTT status, last send. |
+| `GET` | `/api/state` | Live status: mode, IP, RSSI, free-space estimate and curb metrics, per-cell values, heap, AF and MQTT status, last send. |
 | `GET` | `/api/config` | Current config (secrets masked). |
 | `POST` | `/api/config` | Merge a partial config (blank secrets are left alone). |
 | `GET` | `/snapshot` | Current camera JPEG. |
 | `GET` | `/api/log` | The on-device log ring buffer (this is what the web serial console reads). |
 | `GET` | `/api/backup` | Download the full config as JSON (includes secrets). |
 | `POST` | `/api/restore` | Restore a backup, then reboot. |
-| `POST` | `/api/action` | `{"action":"reboot\|factory_reset\|ap_mode\|test_webhook\|test_stats\|test_mqtt\|af_focus\|clear_spool\|recalibrate\|mark_occupied"}`. `recalibrate` = "mark empty now" (add `"slot":N` for one bay, omit for all); `mark_occupied` = force one bay occupied, requires `"slot":N`. |
+| `POST` | `/api/action` | `{"action":"reboot\|factory_reset\|ap_mode\|test_webhook\|test_stats\|test_mqtt\|af_focus\|clear_spool\|recalibrate\|mark_occupied"}`. `recalibrate` = "mark empty now" (add `"slot":N` for one cell, omit for all); `mark_occupied` = force one cell occupied, requires `"slot":N`. |
 | `POST` | `/update` | OTA firmware upload (`.bin`). |
 
 ---
@@ -443,7 +476,9 @@ The STA web UI uses HTTP Digest auth, so the password never crosses the wire in 
 no need for TLS on a trusted LAN. Put a reverse proxy in front if you want transport encryption.
 Setup mode is gated by the WPA2 hotspot password. Webhook and MQTT egress can both use TLS and
 carry your credentials. Config (including secrets) lives in NVS on internal flash; turn on flash
-encryption if at-rest protection matters. The config API never returns secrets.
+encryption if at-rest protection matters. The config API (`GET /api/config`) masks secrets; only the
+explicit backup download (`GET /api/backup`) returns them, and every route is behind Digest auth in
+STA mode.
 
 ---
 
@@ -452,8 +487,8 @@ encryption if at-rest protection matters. The config API never returns secrets.
 | Symptom | Check |
 |---|---|
 | `camera init failed` on boot | Confirm it's the OV5640 V1.2 board, the ribbon is seated, and PSRAM is present. Pin map is in `camera_pins.h`. |
-| Count flips on shadows/clouds | Raise `edgeThreshold`, `hysteresis`, or `stableFrames`, and keep moving shade out of the bay polygons. |
-| A car reads as empty | Lower that bay's threshold, or enlarge the polygon to cover bumper and wheels (more edges). |
+| Free-space estimate jumps on shadows/clouds | Raise the threshold (`edgeThreshold`) or delta (`relDelta`), `hysteresis`, or `stableFrames`, and keep moving shade off the traced curb. |
+| A car reads as empty | Lower the threshold/delta, or re-trace so the cell covers bumper and wheels (more edges). |
 | Can't reach the UI | Confirm the IP (serial or router); in STA mode you have to log in. Hold BOOT 5 s to force AP mode. |
 | Webhook never arrives | Enable it; check the URL is reachable from the camera's subnet; check the auth header; tick *Skip TLS check* for self-signed https. `HTTP -1000` in the UI means it's disabled or has no URL, and *Send test* works even when disabled. |
 | LED behaves backwards | Flip `LED_ACTIVE_LOW` in `camera_pins.h`. |
@@ -477,11 +512,11 @@ src/
   camera_pins.h           OV5640 pin map, BOOT button, status LED
   camera.{h,cpp}          camera init, live sensor settings, OV5640 autofocus
   config_store.{h,cpp}    NVS config model, defaults, JSON, backup/restore
-  cv.{h,cpp}              on-device polygon occupancy CV
-  cv_state.{h,cpp}        persist per-bay baselines to NVS so they survive reboots
+  cv.{h,cpp}              on-device per-cell curb occupancy + free-space estimate CV
+  cv_state.{h,cpp}        persist per-cell baselines to NVS so they survive reboots
   clk.{h,cpp}             NTP / UTC clock
   net.{h,cpp}             WiFi STA/AP state machine, webhook POST (multipart and JSON)
-  spool.{h,cpp}           offline store-and-forward queue (LittleFS) for count changes
+  spool.{h,cpp}           offline store-and-forward queue (LittleFS) for free-space changes
   mqttc.{h,cpp}           native MQTT client + Home Assistant auto-discovery
   buttons.{h,cpp}         BOOT long-press to AP mode + discovery helper
   logbuf.{h,cpp}          log capture for the web serial console

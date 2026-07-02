@@ -12,7 +12,7 @@ In the web UI → **Occupancy engine & training** card:
   that appends to a `.jsonl` file). Set the auth header if your endpoint needs one.
 - Tick **Training capture** and Save.
 
-The device now POSTs a batch every ~30 s: per bay, the 16-feature vector (`f`), the device's
+The device now POSTs a batch every ~30 s: per cell, the 16-feature vector (`f`), the device's
 current decision as a **weak label** (`label`), and the live classifier score (`score`).
 
 ## 2. Collect across conditions
@@ -27,9 +27,9 @@ Concatenate the POSTed batches into one file, `records.jsonl` (one JSON batch pe
 
 ## 4. Correct the labels (only the wrong ones)
 
-Each bay record's `label` is the device's edge-engine guess — correct most of the time. For
+Each cell record's `label` is the device's edge-engine guess — correct most of the time. For
 the frames it got wrong (the weather-hard ones), add a `"y"` field (0 = empty, 1 = occupied)
-to that bay with the true label. The trainer uses `y` when present, else `label`. You only fix
+to that cell with the true label. The trainer uses `y` when present, else `label`. You only fix
 the mistakes, not label from scratch.
 
 ## 5. Train
@@ -41,8 +41,11 @@ python train_classifier.py --in /path/to/records.jsonl --out ../src/clf_model.h
 ```
 
 It prints a held-out **per-class precision/recall + confusion matrix** — judge by those on the
-hard cases, NOT top-line accuracy (a mostly-empty lot scores high by guessing "empty"). It
-writes `src/clf_model.h` with `CLF_MODEL_PRESENT 1`.
+hard cases, NOT top-line accuracy (a mostly-empty lot scores high by guessing "empty"). The
+held-out set is split by batch (`ts`) so near-duplicate frames from one ~30 s capture do not
+leak across train/test, and a **separate report is printed for the hand-verified (`y`-override)
+subset** — trust that one most, since the rest is scored against the device's own weak labels.
+It writes `src/clf_model.h` with `CLF_MODEL_PRESENT 1`.
 
 ## 6. Flash
 

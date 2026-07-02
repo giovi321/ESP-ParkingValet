@@ -5,6 +5,7 @@ Run standalone:  python tools/gen_web_ui.py
 Also invoked automatically as a PlatformIO pre-build step (see platformio.ini).
 """
 import gzip
+import hashlib
 import os
 import sys
 
@@ -20,19 +21,22 @@ def main() -> int:
     with open(SRC, "rb") as f:
         raw = f.read()
     gz = gzip.compress(raw, 9)
+    src_hash = hashlib.sha1(raw).hexdigest()
 
-    # Skip regeneration if unchanged (keeps incremental builds fast).
+    # Skip regeneration only when the stored content hash matches the current
+    # source (keeps incremental builds fast). Byte lengths alone would miss a
+    # same-length edit, so the marker keys on a sha1 of the raw source bytes.
+    marker = f"// raw={len(raw)} gz={len(gz)} sha1={src_hash}"
     if os.path.exists(OUT):
         with open(OUT, "r", encoding="utf-8") as f:
             head = f.read(200)
-        marker = f"// raw={len(raw)} gz={len(gz)}"
         if marker in head:
-            print(f"[gen_web_ui] up to date ({len(raw)} -> {len(gz)} bytes)")
+            print(f"[gen_web_ui] up to date ({len(raw)} -> {len(gz)} bytes, sha1 {src_hash[:12]})")
             return 0
 
     lines = []
     lines.append("#pragma once")
-    lines.append(f"// raw={len(raw)} gz={len(gz)}  (generated from web-src/index.html; do not edit)")
+    lines.append(f"{marker}  (generated from web-src/index.html; do not edit)")
     lines.append("#include <Arduino.h>")
     lines.append(f"const unsigned int index_html_gz_len = {len(gz)};")
     lines.append("const uint8_t index_html_gz[] PROGMEM = {")

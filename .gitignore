@@ -21,3 +21,8 @@ src/secrets.h
 
 # Generated at build time by tools/pio_prebuild.py
 src/build_info.h
+
+# Python (tools)
+__pycache__/
+*.pyc
+.pytest_cache/
